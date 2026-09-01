@@ -130,6 +130,10 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
     /// The UserDefaults autosave name for the main window frame.
     /// Used for both windowFrameAutosaveName and the derived "NSWindow Frame <name>" key.
     private static let windowAutosaveName = "HermesMainWindow"
+    /// The one native canvas colour used by the fixed Mac workbench before and
+    /// behind WebKit, including the SSH footer and macOS 26 glass host tint.
+    private static let fixedCanvasColor = NSColor(
+        srgbRed: 25.0 / 255.0, green: 25.0 / 255.0, blue: 26.0 / 255.0, alpha: 1.0)
     /// Whether this window persists its frame. False for secondary multi-window/tab
     /// instances so they cascade from the front-most window instead of stacking on
     /// the same saved rect.
@@ -201,10 +205,10 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
         window.titleVisibility = .hidden
         window.isOpaque = false
         window.backgroundColor = .clear
-        // Initial appearance — nil is intentional for WebUI theme=system:
-        // AppKit then inherits NSApp.effectiveAppearance and follows macOS
-        // light/dark changes without a cached .aqua/.darkAqua override.
-        window.appearance = (NSApp.delegate as? AppDelegate)?.currentAppearance
+        // The Mac browser uses one fixed dark workbench. WebUI theme/skin
+        // preferences still persist and synchronize, but they no longer tint
+        // native controls or split the window frame into mismatched surfaces.
+        window.appearance = NSAppearance(named: .darkAqua)
 
         // Persist and restore window frame across launches — only for the first
         // (primary) window of the session. Secondary multi-window/tab instances skip
@@ -459,16 +463,12 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
         // the theme bridge below to suppress sample reports that match it,
         // and by underPageBackgroundColor + darkModeScript further down so
         // every layer of the WebView paints this colour pre-page-load.
-        let prePaintColor = (NSApp.delegate as? AppDelegate)?.prePaintBackgroundColor()
-            ?? NSColor(red: 0.10, green: 0.10, blue: 0.10, alpha: 1.0)
+        let prePaintColor = Self.fixedCanvasColor
         let prePaintHex = Self.hexString(for: prePaintColor)
 
-        // Theme bridge: report the page's effective background color to Swift so
-        // window.appearance can follow the web UI's actual theme (light / dark /
-        // system). The page's background changes when the user toggles theme or
-        // when the OS appearance changes (for system-tracking themes); this
-        // reports on initial paint, on classList/style mutations of <html>/<body>,
-        // on window focus, and on prefers-color-scheme media changes.
+        // Theme bridge: keep the WebUI preference cache and sibling tabs in
+        // sync. The browser window itself stays on the fixed dark Mac
+        // presentation even when the persisted WebUI theme or skin changes.
         let themeBridgeScript = WKUserScript(
             source: """
                 (function() {
@@ -703,15 +703,9 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
         let darkModeScript = WKUserScript(
             source: """
                 (function() {
-                    // For theme=system, resolve the initial paint from the
-                    // current macOS media query rather than the previous RGB
-                    // cache. Explicit light/dark keeps its own pre-paint value.
-                    const mode = (localStorage.getItem('hermes-theme') || 'dark').toLowerCase();
-                    const dark = mode === 'dark'
-                        || (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-                    const color = mode === 'system'
-                        ? (dark ? '#1A1A1A' : '#FEFCF7')
-                        : '\(prePaintHex)';
+                    // The native Mac wrapper deliberately has one fixed dark
+                    // presentation, independent of the persisted WebUI skin.
+                    const color = '\(prePaintHex)';
                     document.documentElement.style.background = color;
                     if (document.body) { document.body.style.background = color; }
                 })();
@@ -731,35 +725,12 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
             let macGlassScript = WKUserScript(
                 source: """
                     (function() {
-                        document.documentElement.classList.add('hermes-native-glass');
+                        document.documentElement.classList.add(
+                            'hermes-native-glass', 'hermes-mac-fixed-theme');
                         const style = document.createElement('style');
                         style.id = 'hermes-native-glass-style';
                         style.textContent = \(quotedCSS);
                         (document.head || document.documentElement).appendChild(style);
-
-                        // Keep the Mac presentation family aligned with the
-                        // WebUI skin selector. Accent-only skins intentionally
-                        // share the neutral Mac base; full-palette skins keep
-                        // their own surfaces and component identity.
-                        const macBaseSkins = new Set([
-                            'default', 'ares', 'mono', 'slate',
-                            'poseidon', 'sisyphus', 'charizard'
-                        ]);
-                        function syncMacSkinPresentation() {
-                            const skin = (document.documentElement.dataset.skin || 'default').toLowerCase();
-                            document.documentElement.classList.toggle(
-                                'hermes-mac-base-skin', macBaseSkins.has(skin));
-                        }
-                        syncMacSkinPresentation();
-                        if (window.__hermesMacSkinObserver) {
-                            window.__hermesMacSkinObserver.disconnect();
-                        }
-                        const skinObserver = new MutationObserver(syncMacSkinPresentation);
-                        skinObserver.observe(document.documentElement, {
-                            attributes: true,
-                            attributeFilter: ['data-skin']
-                        });
-                        window.__hermesMacSkinObserver = skinObserver;
 
                         function installMacChromeLayout() {
                             // Move the injected stylesheet to the end of <head>
@@ -987,15 +958,12 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
             // match the page background EXACTLY, so the bottom edge reads as a
             // continuation of the page. An NSVisualEffectView would introduce
             // vibrancy that tints the colour off, breaking the visual seam.
-            // The bar stays in sync via AppDelegate.updateAppearance →
-            // applyChromeBackgroundColor.
+            // The bar uses the fixed Mac canvas colour, matching the chat edge.
             let bar = NSView(
                 frame: NSRect(x: 0, y: 0, width: bounds.width, height: statusBarHeight))
             bar.autoresizingMask = [.width]
             bar.wantsLayer = true
-            let initialBg = (NSApp.delegate as? AppDelegate)?.currentBackgroundColor
-                ?? NSColor(red: 0.10, green: 0.10, blue: 0.10, alpha: 1.0)
-            bar.layer?.backgroundColor = initialBg.cgColor
+            bar.layer?.backgroundColor = Self.fixedCanvasColor.cgColor
             statusBar = bar
             contentView.addSubview(statusBar)
 
@@ -1003,10 +971,7 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
                 frame: NSRect(x: 0, y: statusBarHeight - 1, width: bounds.width, height: 1))
             separator.autoresizingMask = [.width]
             separator.wantsLayer = true
-            // Resolve separatorColor in the window's appearance context so we
-            // get the right shade (the bridge can flip appearance later — see
-            // updateAppearance — but a 1-px line is forgiving enough that we
-            // don't bother re-resolving on every flip).
+            // Resolve separatorColor in the fixed dark window appearance.
             window?.effectiveAppearance.performAsCurrentDrawingAppearance {
                 separator.layer?.backgroundColor = NSColor.separatorColor.cgColor
             }
@@ -1597,7 +1562,7 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
     /// Called by AppDelegate's application-level appearance notification.
     func systemAppearanceDidChange() {
         guard (NSApp.delegate as? AppDelegate)?.currentThemeMode == "system" else { return }
-        window?.appearance = nil
+        window?.appearance = NSAppearance(named: .darkAqua)
         handleEffectiveAppearanceChange()
     }
 
@@ -1960,16 +1925,15 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
         updateWebViewLayout()
     }
 
-    /// Apply a new chrome background colour. Called by AppDelegate.updateAppearance
-    /// when the theme bridge reports a new web-UI background. Tints only the
-    /// SSH footer (which has no native AppKit treatment to preserve) with the
-    /// exact page RGB, so the bottom edge of the window reads as a continuation
-    /// of the page. The native title/tab bar is intentionally left alone so
-    /// AppKit can paint its own tonal materials and tab dividers.
+    /// Refresh native chrome after a WebUI theme event. The reported colour is
+    /// intentionally ignored: the Mac wrapper owns one fixed canvas/tint while
+    /// the WebUI preference continues to persist and sync across tabs.
     func applyChromeBackgroundColor(_ color: NSColor) {
-        statusBar?.layer?.backgroundColor = color.cgColor
+        _ = color  // WebUI still reports its preference; native chrome stays fixed.
+        let fixedColor = Self.fixedCanvasColor
+        statusBar?.layer?.backgroundColor = fixedColor.cgColor
         if #available(macOS 26.0, *), let glassHost = webViewHost as? NSGlassEffectView {
-            glassHost.tintColor = color.withAlphaComponent(0.16)
+            glassHost.tintColor = fixedColor.withAlphaComponent(0.16)
         }
         // Re-resolve the separator colour in the new appearance so its tone
         // matches the surroundings (1-px line, but still nice to keep crisp).

@@ -1,24 +1,8 @@
-/* Native macOS presentation layer for the Hermes wrapper.
-   WebUI owns skin tokens and component identity. This file owns the native
-   window geometry plus the neutral glass treatment used by the base Hermes
-   chrome and accent-only skins. */
-
-:root.hermes-native-glass {
-  --mac-chrome-solid: var(--sidebar);
-  --mac-glass-canvas: var(--bg);
-  --mac-glass-surface: var(--surface);
-  --mac-glass-hover: var(--hover-bg);
-  --mac-glass-selected: var(--surface-subtle-hover);
-  --mac-glass-border: var(--border);
-  --mac-glass-border-strong: var(--border2);
-  --mac-glass-shadow: 0 1px 0 rgba(255, 255, 255, .045) inset,
-    0 8px 30px rgba(0, 0, 0, .12);
-}
-
-/* Default and accent-only skins intentionally share this Mac workbench base.
-   Their accent tokens still come from WebUI. Full-palette skins retain all of
-   their own colors, radii, typography, and component-specific rules. */
-:root.hermes-native-glass.hermes-mac-base-skin {
+/* Fixed native macOS presentation layer for the Hermes wrapper.
+   WebUI still owns behaviour and settings, but every skin is rendered through
+   one stable dark workbench so changing a skin cannot split the window chrome
+   into unrelated colour blocks. */
+html:root.hermes-native-glass.hermes-mac-fixed-theme {
   --mac-chrome-solid: #0f0f10;
   --mac-glass-canvas: #19191a;
   --mac-glass-surface: rgba(255, 255, 255, .055);
@@ -28,48 +12,55 @@
   --mac-glass-border-strong: rgba(255, 255, 255, .14);
   --mac-glass-shadow: 0 1px 0 rgba(255, 255, 255, .045) inset,
     0 8px 30px rgba(0, 0, 0, .12);
-  --bg: #19191a;
-  --sidebar: #0f0f10;
-  --surface: #202021;
-  --surface-subtle: rgba(255, 255, 255, .025);
-  --surface-subtle-hover: rgba(255, 255, 255, .045);
-  --border: rgba(255, 255, 255, .09);
-  --border2: rgba(255, 255, 255, .14);
-  --border-subtle: rgba(255, 255, 255, .075);
-  --border-muted: rgba(255, 255, 255, .12);
-  --input-bg: rgba(255, 255, 255, .04);
-  --hover-bg: rgba(255, 255, 255, .06);
-  --code-bg: #151516;
-  --topbar-bg: rgba(25, 25, 26, .92);
-  --main-bg: #19191a;
-  color-scheme: dark;
-}
 
-:root.hermes-native-glass.hermes-mac-base-skin:not(.dark) {
-  --mac-chrome-solid: #eeeeef;
-  --mac-glass-canvas: #f8f8f9;
-  --mac-glass-surface: rgba(255, 255, 255, .58);
-  --mac-glass-hover: rgba(255, 255, 255, .66);
-  --mac-glass-selected: rgba(255, 255, 255, .80);
-  --mac-glass-border: rgba(0, 0, 0, .085);
-  --mac-glass-border-strong: rgba(0, 0, 0, .13);
-  --mac-glass-shadow: 0 1px 0 rgba(255, 255, 255, .72) inset,
-    0 8px 30px rgba(0, 0, 0, .06);
-  --bg: #f8f8f9;
-  --sidebar: #eeeeef;
-  --surface: #ffffff;
-  --surface-subtle: rgba(0, 0, 0, .025);
-  --surface-subtle-hover: rgba(0, 0, 0, .045);
-  --border: rgba(0, 0, 0, .085);
-  --border2: rgba(0, 0, 0, .13);
-  --border-subtle: rgba(0, 0, 0, .08);
-  --border-muted: rgba(0, 0, 0, .12);
-  --input-bg: rgba(0, 0, 0, .03);
-  --hover-bg: rgba(0, 0, 0, .05);
-  --code-bg: #f1f1f2;
-  --topbar-bg: rgba(248, 248, 249, .94);
-  --main-bg: #f8f8f9;
-  color-scheme: light;
+  /* Freeze the complete colour contract. Some WebUI skins replace both the
+     base variables and individual component rules, so every structural,
+     text, action and message token must remain authoritative here. */
+  --bg: #19191a !important;
+  --sidebar: #0f0f10 !important;
+  --surface: #202021 !important;
+  --surface-subtle: rgba(255, 255, 255, .025) !important;
+  --surface-subtle-hover: rgba(255, 255, 255, .055) !important;
+  --border: rgba(255, 255, 255, .09) !important;
+  --border2: rgba(255, 255, 255, .14) !important;
+  --border-subtle: rgba(255, 255, 255, .075) !important;
+  --border-muted: rgba(255, 255, 255, .12) !important;
+  --input-bg: rgba(255, 255, 255, .04) !important;
+  --hover-bg: rgba(255, 255, 255, .06) !important;
+  --code-bg: #151516 !important;
+  --code-inline-bg: rgba(255, 255, 255, .07) !important;
+  --topbar-bg: #19191a !important;
+  --main-bg: #19191a !important;
+
+  --text: #ececee !important;
+  --strong: #fafafa !important;
+  --muted: #a1a1a6 !important;
+  --em: #d0d0d2 !important;
+  --code-text: #e1e1e4 !important;
+  --pre-text: #e8e8ea !important;
+
+  --accent: #5e9eff !important;
+  --accent-hover: #78afff !important;
+  --accent-bg: rgba(94, 158, 255, .10) !important;
+  --accent-bg-strong: rgba(94, 158, 255, .18) !important;
+  --accent-text: #7eb3ff !important;
+  --blue: #5e9eff !important;
+  --gold: #b8b8bc !important;
+  --focus-ring: rgba(94, 158, 255, .35) !important;
+  --focus-glow: rgba(94, 158, 255, .10) !important;
+
+  --error: #ff6961 !important;
+  --success: #63c174 !important;
+  --warning: #f0ad4e !important;
+  --info: #69a7ff !important;
+  --user-bubble-bg: #2a2a2c !important;
+  --user-bubble-border: #3d3d40 !important;
+  --user-bubble-text: #f2f2f3 !important;
+  --user-bubble-placeholder: #a1a1a6 !important;
+  --user-selection-bg: rgba(94, 158, 255, .18) !important;
+  --user-selection-text: #f2f2f3 !important;
+  --panel-head-primary-fg: #ececee !important;
+  color-scheme: dark !important;
 }
 
 html.hermes-native-glass,
@@ -77,136 +68,160 @@ html.hermes-native-glass body {
   background: transparent !important;
 }
 
-/* Base/accent-only visual treatment. Full-palette skins do not have this
-   class, so these rules cannot erase their visual identity. */
-.hermes-native-glass.hermes-mac-base-skin .app-titlebar,
-.hermes-native-glass.hermes-mac-base-skin .rail,
-.hermes-native-glass.hermes-mac-base-skin .sidebar,
-.hermes-native-glass.hermes-mac-base-skin .rightpanel {
+/* The side rails are one continuous near-black frame. The titlebar is omitted
+   here on purpose: its final desktop rule is transparent so the columns paint
+   straight through to the top edge. */
+html:root.hermes-native-glass.hermes-mac-fixed-theme .rail,
+html:root.hermes-native-glass.hermes-mac-fixed-theme .sidebar,
+html:root.hermes-native-glass.hermes-mac-fixed-theme .sidebar .panel-view,
+html:root.hermes-native-glass.hermes-mac-fixed-theme .rightpanel {
   background: var(--mac-chrome-solid) !important;
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
 
-.hermes-native-glass.hermes-mac-base-skin .rail,
-.hermes-native-glass.hermes-mac-base-skin .sidebar {
+html:root.hermes-native-glass.hermes-mac-fixed-theme .rail,
+html:root.hermes-native-glass.hermes-mac-fixed-theme .sidebar {
   border-right: 1px solid var(--mac-glass-border) !important;
 }
 
-.hermes-native-glass.hermes-mac-base-skin .rail {
+html:root.hermes-native-glass.hermes-mac-fixed-theme .rail {
   box-shadow: none !important;
 }
 
-.hermes-native-glass.hermes-mac-base-skin .sidebar {
+html:root.hermes-native-glass.hermes-mac-fixed-theme .sidebar {
   box-shadow: 1px 0 0 rgba(255, 255, 255, .018) inset !important;
 }
 
-.hermes-native-glass.hermes-mac-base-skin .rail-btn {
+html:root.hermes-native-glass.hermes-mac-fixed-theme .rail-btn {
   border: 1px solid transparent !important;
   border-radius: 11px !important;
   transition: background-color .16s ease, border-color .16s ease,
     color .16s ease, transform .16s ease !important;
 }
 
-.hermes-native-glass.hermes-mac-base-skin .rail-btn:hover {
+html:root.hermes-native-glass.hermes-mac-fixed-theme .rail-btn:hover {
   background: var(--mac-glass-hover) !important;
   border-color: var(--mac-glass-border) !important;
 }
 
-.hermes-native-glass.hermes-mac-base-skin .rail-btn:active {
+html:root.hermes-native-glass.hermes-mac-fixed-theme .rail-btn:active {
   transform: scale(.94);
 }
 
-.hermes-native-glass.hermes-mac-base-skin .rail-btn.active {
+html:root.hermes-native-glass.hermes-mac-fixed-theme .rail-btn.active {
   background: var(--mac-glass-selected) !important;
   border-color: var(--mac-glass-border-strong) !important;
   box-shadow: 0 1px 0 rgba(255, 255, 255, .06) inset,
     0 4px 12px rgba(0, 0, 0, .10) !important;
 }
 
-.hermes-native-glass.hermes-mac-base-skin .rail-btn.active::before,
-.hermes-native-glass.hermes-mac-base-skin .session-item.active::before {
+html:root.hermes-native-glass.hermes-mac-fixed-theme .rail-btn.active::before,
+html:root.hermes-native-glass.hermes-mac-fixed-theme .session-item.active::before {
   display: none !important;
 }
 
-.hermes-native-glass.hermes-mac-base-skin .panel-head {
+html:root.hermes-native-glass.hermes-mac-fixed-theme .panel-head {
   border-bottom-color: var(--mac-glass-border) !important;
 }
 
-.hermes-native-glass.hermes-mac-base-skin .session-search,
-.hermes-native-glass.hermes-mac-base-skin .sidebar-search input,
-.hermes-native-glass.hermes-mac-base-skin .sidebar-search select {
+html:root.hermes-native-glass.hermes-mac-fixed-theme .session-search,
+html:root.hermes-native-glass.hermes-mac-fixed-theme .sidebar-search input,
+html:root.hermes-native-glass.hermes-mac-fixed-theme .sidebar-search select {
   background: var(--mac-glass-surface) !important;
   border-color: var(--mac-glass-border) !important;
   border-radius: 11px !important;
   box-shadow: 0 1px 0 rgba(255, 255, 255, .035) inset !important;
 }
 
-.hermes-native-glass.hermes-mac-base-skin .session-source-tab,
-.hermes-native-glass.hermes-mac-base-skin .session-filter-chip,
-.hermes-native-glass.hermes-mac-base-skin .session-item {
+html:root.hermes-native-glass.hermes-mac-fixed-theme .session-source-tab,
+html:root.hermes-native-glass.hermes-mac-fixed-theme .session-filter-chip,
+html:root.hermes-native-glass.hermes-mac-fixed-theme .session-item {
   border: 1px solid transparent !important;
   border-radius: 11px !important;
 }
 
-.hermes-native-glass.hermes-mac-base-skin .session-source-tab:hover,
-.hermes-native-glass.hermes-mac-base-skin .session-filter-chip:hover,
-.hermes-native-glass.hermes-mac-base-skin .session-item:hover {
+html:root.hermes-native-glass.hermes-mac-fixed-theme .session-source-tab:hover,
+html:root.hermes-native-glass.hermes-mac-fixed-theme .session-filter-chip:hover,
+html:root.hermes-native-glass.hermes-mac-fixed-theme .session-item:hover {
   background: var(--mac-glass-hover) !important;
   border-color: var(--mac-glass-border) !important;
 }
 
-.hermes-native-glass.hermes-mac-base-skin .session-source-tab.active,
-.hermes-native-glass.hermes-mac-base-skin .session-filter-chip.active,
-.hermes-native-glass.hermes-mac-base-skin .session-item.active {
+html:root.hermes-native-glass.hermes-mac-fixed-theme .session-source-tab.active,
+html:root.hermes-native-glass.hermes-mac-fixed-theme .session-filter-chip.active,
+html:root.hermes-native-glass.hermes-mac-fixed-theme .session-item.active {
   background: var(--mac-glass-selected) !important;
   border: 1px solid var(--mac-glass-border-strong) !important;
   box-shadow: 0 1px 0 rgba(255, 255, 255, .045) inset !important;
   color: var(--text) !important;
 }
 
-.hermes-native-glass.hermes-mac-base-skin .session-item.active,
-.hermes-native-glass.hermes-mac-base-skin .session-item.active.streaming,
-.hermes-native-glass.hermes-mac-base-skin .session-item.active.unread,
-.hermes-native-glass.hermes-mac-base-skin .session-item.active.needs-attention {
+html:root.hermes-native-glass.hermes-mac-fixed-theme .session-item.active,
+html:root.hermes-native-glass.hermes-mac-fixed-theme .session-item.active.streaming,
+html:root.hermes-native-glass.hermes-mac-fixed-theme .session-item.active.unread,
+html:root.hermes-native-glass.hermes-mac-fixed-theme .session-item.active.needs-attention {
   padding-left: 12px !important;
 }
 
-.hermes-native-glass.hermes-mac-base-skin .session-item.active * {
+html:root.hermes-native-glass.hermes-mac-fixed-theme .session-item.active * {
   color: inherit !important;
 }
 
-.hermes-native-glass.hermes-mac-base-skin .main,
-.hermes-native-glass.hermes-mac-base-skin .main-view,
-.hermes-native-glass.hermes-mac-base-skin .chat,
-.hermes-native-glass.hermes-mac-base-skin .messages,
-.hermes-native-glass.hermes-mac-base-skin .panel-view {
+html:root.hermes-native-glass.hermes-mac-fixed-theme .main,
+html:root.hermes-native-glass.hermes-mac-fixed-theme .main-view,
+html:root.hermes-native-glass.hermes-mac-fixed-theme .chat,
+html:root.hermes-native-glass.hermes-mac-fixed-theme .messages {
   background: var(--mac-glass-canvas) !important;
 }
 
-.hermes-native-glass.hermes-mac-base-skin .topbar {
+html:root.hermes-native-glass.hermes-mac-fixed-theme .topbar {
   background: var(--mac-glass-canvas) !important;
   border-bottom-color: var(--mac-glass-border) !important;
   -webkit-backdrop-filter: blur(24px) saturate(1.25);
   backdrop-filter: blur(24px) saturate(1.25);
 }
 
-.hermes-native-glass.hermes-mac-base-skin .composer-wrap {
+html:root.hermes-native-glass.hermes-mac-fixed-theme .composer-wrap {
   background: transparent !important;
   border-top: 0 !important;
 }
 
-.hermes-native-glass.hermes-mac-base-skin .composer-wrap::before {
+html:root.hermes-native-glass.hermes-mac-fixed-theme .composer-wrap::before {
   background: linear-gradient(to bottom, transparent, var(--mac-glass-canvas)) !important;
 }
 
-.hermes-native-glass.hermes-mac-base-skin .composer-box {
+html:root.hermes-native-glass.hermes-mac-fixed-theme .composer-box {
   background: var(--mac-glass-surface) !important;
   border: 1px solid var(--mac-glass-border-strong) !important;
   border-radius: 18px !important;
   box-shadow: var(--mac-glass-shadow) !important;
   -webkit-backdrop-filter: blur(24px) saturate(1.25);
   backdrop-filter: blur(24px) saturate(1.25);
+}
+
+/* Page zoom can make WebKit expose the textarea's native horizontal and
+   vertical tracks even when the composer still fits. Keep wheel/trackpad and
+   keyboard scrolling functional, but never draw tracks inside the input. */
+html:root.hermes-native-glass.hermes-mac-fixed-theme textarea#msg {
+  box-sizing: border-box !important;
+  max-width: 100% !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  scrollbar-width: none !important;
+  -ms-overflow-style: none;
+}
+
+html:root.hermes-native-glass.hermes-mac-fixed-theme textarea#msg::-webkit-scrollbar,
+html:root.hermes-native-glass.hermes-mac-fixed-theme .composer-left::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+html:root.hermes-native-glass.hermes-mac-fixed-theme .composer-left {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none;
 }
 
 .hermes-native-glass button,
@@ -225,7 +240,7 @@ html.hermes-native-glass body {
     --mac-titlebar-height: 0px;
   }
 
-  .hermes-native-glass .app-titlebar {
+  html:root.hermes-native-glass.hermes-mac-fixed-theme .app-titlebar {
     position: fixed !important;
     top: 0;
     left: var(--hermes-main-left, 348px);
@@ -236,34 +251,35 @@ html.hermes-native-glass body {
     box-sizing: border-box !important;
     justify-content: flex-start !important;
     background: transparent !important;
+    background-image: none !important;
     border: 0 !important;
     box-shadow: none !important;
     pointer-events: none;
   }
 
-  .hermes-native-glass .app-titlebar-inner {
+  html:root.hermes-native-glass.hermes-mac-fixed-theme .app-titlebar-inner {
     justify-content: flex-start !important;
   }
 
-  .hermes-native-glass .layout {
+  html:root.hermes-native-glass.hermes-mac-fixed-theme .layout {
     height: 100%;
   }
 
-  .hermes-native-glass .rail {
+  html:root.hermes-native-glass.hermes-mac-fixed-theme .rail {
     padding-top: calc(var(--mac-titlebar-height) + 8px) !important;
     box-sizing: border-box;
   }
 
-  .hermes-native-glass .sidebar,
-  .hermes-native-glass .main,
-  .hermes-native-glass .rightpanel {
+  html:root.hermes-native-glass.hermes-mac-fixed-theme .sidebar,
+  html:root.hermes-native-glass.hermes-mac-fixed-theme .main,
+  html:root.hermes-native-glass.hermes-mac-fixed-theme .rightpanel {
     padding-top: var(--mac-titlebar-height);
     box-sizing: border-box;
   }
 }
 
 @media (prefers-reduced-transparency: reduce) {
-  .hermes-native-glass.hermes-mac-base-skin .composer-box {
+  html:root.hermes-native-glass.hermes-mac-fixed-theme .composer-box {
     background: var(--surface) !important;
     -webkit-backdrop-filter: none;
     backdrop-filter: none;

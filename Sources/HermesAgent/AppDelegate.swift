@@ -73,9 +73,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
     private static let systemThemeCacheKey = "themeCacheMode"
 
-    /// Apply the WebUI's theme mode, skin, and page-background colour to every
-    /// Hermes window. For `system`, the window appearance is deliberately nil
-    /// so AppKit inherits the system effectiveAppearance and updates it itself.
+    /// Keep WebUI theme/skin preferences synchronized across windows. Browser
+    /// windows deliberately retain the fixed dark Mac presentation; auxiliary
+    /// native windows may still follow the stored appearance preference.
     func updateAppearance(
         _ appearance: NSAppearance?, backgroundColor: NSColor? = nil,
         themeMode: String? = nil, skin: String? = nil
@@ -98,7 +98,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         if appearanceChanged { currentAppearance = targetAppearance }
         if let bg = backgroundColor { currentBackgroundColor = bg }
         for browser in browserWindows {
-            if appearanceChanged || modeChanged { browser.window?.appearance = targetAppearance }
+            if appearanceChanged || modeChanged {
+                browser.window?.appearance = NSAppearance(named: .darkAqua)
+            }
             if let bg = backgroundColor {
                 // SSH footer is the only chrome surface that takes the exact
                 // page RGB — it has no native treatment, so matching the page
