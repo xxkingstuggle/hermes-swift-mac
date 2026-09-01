@@ -93,7 +93,7 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
 
     /// Exposes the WKWebView for zoom operations called from AppDelegate menu actions.
     /// Return type is WKWebView (not the private HermesWebView subclass) so Swift's
-    /// access-level rules are satisfied — callers only need .magnification anyway.
+    /// access-level rules are satisfied — callers only need page zoom anyway.
     var webViewForZoom: WKWebView? { webView }
     private var separator: NSView!
     private var statusDot: NSView!
@@ -1553,7 +1553,7 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
         // treat any value outside the valid zoom range as "no preference".
         let saved = UserDefaults.standard.double(forKey: AppDelegate.zoomKey)
         if saved >= 0.5 && saved <= 3.0 {
-            webView.magnification = saved
+            webView.pageZoom = saved
         }
 
         // Apply tabbed-mode titlebar class on first paint and SPA navigations —

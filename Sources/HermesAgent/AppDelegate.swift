@@ -965,18 +965,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
     @objc func zoomIn() {
         guard let webView = keyBrowserWindow?.webViewForZoom else { return }
-        webView.magnification = min(webView.magnification + 0.1, 3.0)
-        UserDefaults.standard.set(webView.magnification, forKey: Self.zoomKey)
+        webView.pageZoom = min(webView.pageZoom + 0.1, 3.0)
+        UserDefaults.standard.set(webView.pageZoom, forKey: Self.zoomKey)
     }
 
     @objc func zoomOut() {
         guard let webView = keyBrowserWindow?.webViewForZoom else { return }
-        webView.magnification = max(webView.magnification - 0.1, 0.5)
-        UserDefaults.standard.set(webView.magnification, forKey: Self.zoomKey)
+        webView.pageZoom = max(webView.pageZoom - 0.1, 0.5)
+        UserDefaults.standard.set(webView.pageZoom, forKey: Self.zoomKey)
     }
 
     @objc func zoomReset() {
-        keyBrowserWindow?.webViewForZoom?.magnification = 1.0
+        keyBrowserWindow?.webViewForZoom?.pageZoom = 1.0
         UserDefaults.standard.set(1.0, forKey: Self.zoomKey)
     }
 

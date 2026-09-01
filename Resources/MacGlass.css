@@ -2,7 +2,7 @@
    the hosted WebUI remains the source of truth for layout and behaviour. */
 
 :root.hermes-native-glass {
-  --mac-glass-nav: rgba(38, 39, 41, .50);
+  --mac-chrome-solid: #202120;
   --mac-glass-canvas: rgba(17, 18, 19, .92);
   --mac-glass-surface: rgba(255, 255, 255, .055);
   --mac-glass-hover: rgba(255, 255, 255, .075);
@@ -15,7 +15,7 @@
 }
 
 :root.hermes-native-glass:not(.dark) {
-  --mac-glass-nav: rgba(239, 239, 241, .58);
+  --mac-chrome-solid: #eeeeef;
   --mac-glass-canvas: rgba(249, 249, 250, .93);
   --mac-glass-surface: rgba(255, 255, 255, .58);
   --mac-glass-hover: rgba(255, 255, 255, .66);
@@ -35,9 +35,9 @@ html.hermes-native-glass body {
 .hermes-native-glass .app-titlebar,
 .hermes-native-glass .rail,
 .hermes-native-glass .sidebar {
-  background: var(--mac-glass-nav) !important;
-  -webkit-backdrop-filter: blur(34px) saturate(1.45);
-  backdrop-filter: blur(34px) saturate(1.45);
+  background: var(--mac-chrome-solid) !important;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 .hermes-native-glass .app-titlebar {
@@ -174,7 +174,7 @@ html.hermes-native-glass body {
   .hermes-native-glass .app-titlebar,
   .hermes-native-glass .rail,
   .hermes-native-glass .sidebar {
-    background: var(--sidebar) !important;
+    background: var(--mac-chrome-solid) !important;
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
