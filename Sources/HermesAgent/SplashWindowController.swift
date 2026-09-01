@@ -13,9 +13,8 @@ class SplashWindowController: NSWindowController {
         window.backgroundColor = .clear
         window.level = .floating
         window.center()
-        // Match the active web-UI theme tracked on AppDelegate; falls back to dark.
+        // nil is intentional for WebUI theme=system: inherit macOS appearance.
         window.appearance = (NSApp.delegate as? AppDelegate)?.currentAppearance
-            ?? NSAppearance(named: .darkAqua)
         super.init(window: window)
 
         // NSVisualEffectView automatically tracks the window's appearance and

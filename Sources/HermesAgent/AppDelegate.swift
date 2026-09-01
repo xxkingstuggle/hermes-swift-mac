@@ -2,9 +2,11 @@ import AVFoundation
 import Carbon.HIToolbox
 import Cocoa
 import Network
+import os
 import Sparkle
+import UserNotifications
 
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
 
     let appTitle = "Hermes Agent"
 
@@ -42,14 +44,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var errorWindow: ErrorWindowController?
     var preferencesWindow: PreferencesWindowController?
     var updaterController: SPUStandardUpdaterController!
+    private var systemAppearanceObservation: NSKeyValueObservation?
 
-    /// The appearance currently in effect for all Hermes windows. Updated by
-    /// BrowserWindowController's theme bridge each time the web UI reports a new
-    /// background colour. New windows (Preferences, Error, Splash, secondary
-    /// browser) read this on init so they open in the matching theme. Defaults
-    /// to .darkAqua so the very first window is dark before the bridge fires
-    /// (matches the hardcoded #1a1a1a pre-paint background).
-    var currentAppearance: NSAppearance? = NSAppearance(named: .darkAqua)
+    /// The WebUI theme mode currently selected by the user. `system` is the
+    /// default because a native macOS window must inherit the system
+    /// appearance until the WebUI reports its persisted preference.
+    var currentThemeMode = "system"
+
+    /// The explicit appearance currently assigned to Hermes windows. This is
+    /// nil for `system`, which is intentional: nil makes AppKit inherit
+    /// NSApp.effectiveAppearance and follow macOS changes live.
+    var currentAppearance: NSAppearance?
 
     /// The page-background colour the web UI most recently reported. Used to
     /// tint the SSH footer (which has no native treatment) and as the WKWebView
@@ -61,17 +66,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var currentBackgroundColor: NSColor =
         NSColor(red: 0.10, green: 0.10, blue: 0.10, alpha: 1.0)
 
-    /// Apply a new appearance + page-background colour to every Hermes window.
-    /// Called by the BrowserWindowController theme bridge when the web UI
-    /// reports a new background.
-    func updateAppearance(_ appearance: NSAppearance?, backgroundColor: NSColor? = nil) {
-        let appearanceChanged = appearance?.name != currentAppearance?.name
+    private static let systemThemeCacheKey = "themeCacheMode"
+
+    /// Apply the WebUI's theme mode + page-background colour to every Hermes
+    /// window. For `system`, the window appearance is deliberately nil so
+    /// AppKit inherits the system effectiveAppearance and updates it itself.
+    func updateAppearance(
+        _ appearance: NSAppearance?, backgroundColor: NSColor? = nil,
+        themeMode: String? = nil
+    ) {
+        let normalizedMode = Self.normalizedThemeMode(themeMode)
+        let targetAppearance: NSAppearance?
+        if themeMode != nil {
+            targetAppearance = Self.appearanceForThemeMode(normalizedMode)
+        } else {
+            targetAppearance = appearance
+        }
+        let appearanceChanged = targetAppearance?.name != currentAppearance?.name
+        let modeChanged = themeMode != nil && normalizedMode != currentThemeMode
         let bgChanged = backgroundColor != nil && backgroundColor != currentBackgroundColor
-        guard appearanceChanged || bgChanged else { return }
-        if appearanceChanged { currentAppearance = appearance }
+        guard appearanceChanged || modeChanged || bgChanged else { return }
+        if themeMode != nil { currentThemeMode = normalizedMode }
+        if appearanceChanged { currentAppearance = targetAppearance }
         if let bg = backgroundColor { currentBackgroundColor = bg }
         for browser in browserWindows {
-            if appearanceChanged { browser.window?.appearance = appearance }
+            if appearanceChanged || modeChanged { browser.window?.appearance = targetAppearance }
             if let bg = backgroundColor {
                 // SSH footer is the only chrome surface that takes the exact
                 // page RGB — it has no native treatment, so matching the page
@@ -81,10 +100,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 browser.applyChromeBackgroundColor(bg)
             }
         }
-        if appearanceChanged {
-            preferencesWindow?.window?.appearance = appearance
-            errorWindow?.window?.appearance = appearance
-            splashWindow?.window?.appearance = appearance
+        if appearanceChanged || modeChanged {
+            preferencesWindow?.window?.appearance = targetAppearance
+            errorWindow?.window?.appearance = targetAppearance
+            splashWindow?.window?.appearance = targetAppearance
         }
         // Cross-tab theme sync: when one tab's bridge fires, push the
         // hermes-webui theme + skin from shared localStorage into every other
@@ -97,10 +116,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // in boot.js (loaded as a regular script, not a module), which makes
         // them globals on `window` and reachable from `evaluateJavaScript`.
         // Idempotent — re-applying the same theme is a no-op repaint.
-        if bgChanged { broadcastWebUIThemeSync() }
+        if bgChanged || modeChanged { broadcastWebUIThemeSync() }
         // Persist so next launch + new tabs/windows can open with the last-seen
         // theme instead of flashing dark while the bridge re-checks.
-        if bgChanged { persistCurrentTheme() }
+        if bgChanged || modeChanged { persistCurrentTheme() }
     }
 
     /// Tell every browser window's WKWebView to re-apply theme + skin from
@@ -148,6 +167,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// the last-seen theme.
     func loadCachedTheme() {
         let defaults = UserDefaults.standard
+        currentThemeMode = Self.normalizedThemeMode(
+            defaults.string(forKey: Self.systemThemeCacheKey))
+        currentAppearance = Self.appearanceForThemeMode(currentThemeMode)
         guard defaults.object(forKey: Self.themeCacheKeyTimestamp) != nil else { return }
         let timestamp = defaults.double(forKey: Self.themeCacheKeyTimestamp)
         let age = Date().timeIntervalSince1970 - timestamp
@@ -160,13 +182,38 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // produce a transparent or oversaturated chrome colour.
         guard (0.0...1.0).contains(r), (0.0...1.0).contains(g), (0.0...1.0).contains(b)
         else { return }
-        // Default to dark unless the cached sample is genuinely near-white
-        // — guards against a poisoned cache (e.g. an overlay sample stuck at
-        // off-white) flipping the chrome to .aqua on the next launch and
-        // showing the user a flash of light material before the bridge can
-        // re-sample. See `appearanceForLuminance(_:)` for the threshold.
-        currentAppearance = Self.appearanceForLuminance(0.2126 * r + 0.7152 * g + 0.0722 * b)
+        // A system theme must not be reconstructed from the previous page RGB
+        // sample. Keep the colour for the WebView pre-paint backstop, but let
+        // AppKit inherit the current macOS effectiveAppearance.
         currentBackgroundColor = NSColor(srgbRed: r, green: g, blue: b, alpha: 1.0)
+    }
+
+    static func normalizedThemeMode(_ raw: String?) -> String {
+        switch raw?.lowercased() {
+        case "light": return "light"
+        case "dark": return "dark"
+        case "system": return "system"
+        default: return "system"
+        }
+    }
+
+    static func appearanceForThemeMode(_ mode: String) -> NSAppearance? {
+        switch normalizedThemeMode(mode) {
+        case "light": return NSAppearance(named: .aqua)
+        case "dark": return NSAppearance(named: .darkAqua)
+        default: return nil
+        }
+    }
+
+    /// Choose a conservative pre-paint colour for a WebView whose theme is
+    /// system-controlled. The page replaces this immediately from its own
+    /// theme variables; this only prevents a wrong-colour gutter during load.
+    func prePaintBackgroundColor() -> NSColor {
+        guard currentThemeMode == "system" else { return currentBackgroundColor }
+        let dark = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        return dark
+            ? NSColor(srgbRed: 0.10, green: 0.10, blue: 0.10, alpha: 1.0)
+            : NSColor(srgbRed: 0.996, green: 0.988, blue: 0.969, alpha: 1.0)
     }
 
     /// Map a luminance value (0…1) to an NSAppearance, biased to dark
@@ -197,6 +244,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         defaults.set(Double(sRGB.greenComponent), forKey: Self.themeCacheKeyG)
         defaults.set(Double(sRGB.blueComponent), forKey: Self.themeCacheKeyB)
         defaults.set(Date().timeIntervalSince1970, forKey: Self.themeCacheKeyTimestamp)
+        defaults.set(currentThemeMode, forKey: Self.systemThemeCacheKey)
     }
 
     // Global hotkey state (fix #6, Carbon-based — no Accessibility permission required)
@@ -224,6 +272,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             "globalHotkeyEnabled": true,
         ])
 
+        // The notification-center delegate is application-scoped. Keeping it
+        // here avoids whichever browser window was created last becoming the
+        // process-wide delegate.
+        UNUserNotificationCenter.current().delegate = self
+
         // Initialize Sparkle updater — feed URL comes from SUFeedURL in Info.plist
         updaterController = SPUStandardUpdaterController(
             startingUpdater: true,
@@ -237,10 +290,67 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // first browser window paint with the right colour instead of flashing
         // dark while the bridge runs its first sample.
         loadCachedTheme()
+        systemAppearanceObservation = NSApp.observe(
+            \NSApplication.effectiveAppearance,
+            options: [.new]
+        ) { [weak self] _, _ in
+            self?.handleSystemAppearanceChange()
+        }
         warmUpCaptureSubsystem()
         setupGlobalHotkey()
         startTunnel()
         startPathMonitor()
+        requestNotificationAuthorizationAtLaunch()
+    }
+
+    /// Ask macOS for notification authorization on every launch. UNUserNotificationCenter
+    /// shows the system consent prompt only when the status is .notDetermined; once the
+    /// user has granted or denied, this call is a silent no-op that just refreshes state.
+    /// Without this, the app never appears in System Settings → Notifications because
+    /// authorization previously depended on the WebUI page initiating a request.
+    private func requestNotificationAuthorizationAtLaunch() {
+        guard UserDefaults.standard.bool(forKey: "notificationsEnabled") else { return }
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { settings in
+            guard settings.authorizationStatus == .notDetermined else {
+                Logger(subsystem: "ai.get-hermes.HermesAgent", category: "notifications")
+                    .info("launch authorization skip status=\(settings.authorizationStatus.rawValue, privacy: .public)")
+                return
+            }
+            center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
+                if let error {
+                    Logger(subsystem: "ai.get-hermes.HermesAgent", category: "notifications")
+                        .error("launch authorization error: \(error.localizedDescription, privacy: .public)")
+                }
+                Logger(subsystem: "ai.get-hermes.HermesAgent", category: "notifications")
+                    .info("launch authorization completed granted=\(granted, privacy: .public)")
+            }
+        }
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        Logger(subsystem: "ai.get-hermes.HermesAgent", category: "notifications")
+            .info("willPresent identifier=\(notification.request.identifier, privacy: .public)")
+        completionHandler([.banner, .sound])
+    }
+
+    deinit {
+        systemAppearanceObservation = nil
+    }
+
+    /// WKWebView does not reliably deliver a view-level appearance callback
+    /// for every macOS appearance transition. Use the application-level event
+    /// as a second, deterministic path for system-tracking themes.
+    private func handleSystemAppearanceChange() {
+        guard currentThemeMode == "system" else { return }
+        browserWindows.forEach { $0.systemAppearanceDidChange() }
+        preferencesWindow?.window?.appearance = nil
+        errorWindow?.window?.appearance = nil
+        splashWindow?.window?.appearance = nil
     }
 
 

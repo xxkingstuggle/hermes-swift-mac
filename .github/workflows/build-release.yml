@@ -69,21 +69,9 @@ jobs:
             -add_rpath "@executable_path/../Frameworks" \
             "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 
-          # Convert icon
-          ICONSET="AppIcon.iconset"
-          mkdir -p "$ICONSET"
-          sips -z 16 16     "Hermes Icon.png" --out "$ICONSET/icon_16x16.png"
-          sips -z 32 32     "Hermes Icon.png" --out "$ICONSET/icon_16x16@2x.png"
-          sips -z 32 32     "Hermes Icon.png" --out "$ICONSET/icon_32x32.png"
-          sips -z 64 64     "Hermes Icon.png" --out "$ICONSET/icon_32x32@2x.png"
-          sips -z 128 128   "Hermes Icon.png" --out "$ICONSET/icon_128x128.png"
-          sips -z 256 256   "Hermes Icon.png" --out "$ICONSET/icon_128x128@2x.png"
-          sips -z 256 256   "Hermes Icon.png" --out "$ICONSET/icon_256x256.png"
-          sips -z 512 512   "Hermes Icon.png" --out "$ICONSET/icon_256x256@2x.png"
-          sips -z 512 512   "Hermes Icon.png" --out "$ICONSET/icon_512x512.png"
-          sips -z 1024 1024 "Hermes Icon.png" --out "$ICONSET/icon_512x512@2x.png"
-          iconutil -c icns "$ICONSET" -o "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
-          rm -rf "$ICONSET"
+          # Copy the same icon resources used by the local build and WebUI welcome page.
+          cp "Resources/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+          cp "Resources/WelcomeIcon.png" "$APP_BUNDLE/Contents/Resources/WelcomeIcon.png"
 
           # Write Info.plist
           /usr/libexec/PlistBuddy -c "Add :CFBundleName string 'Hermes Agent'"              "$APP_BUNDLE/Contents/Info.plist"

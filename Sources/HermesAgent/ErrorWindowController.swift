@@ -18,10 +18,8 @@ class ErrorWindowController: NSWindowController {
         )
         window.title = appTitle
         window.center()
-        // Match the active web-UI theme tracked on AppDelegate; falls back to dark
-        // if the bridge hasn't reported yet.
+        // nil is intentional for WebUI theme=system: inherit macOS appearance.
         window.appearance = (NSApp.delegate as? AppDelegate)?.currentAppearance
-            ?? NSAppearance(named: .darkAqua)
         super.init(window: window)
 
         guard let content = window.contentView else { return }

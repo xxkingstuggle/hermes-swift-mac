@@ -2,6 +2,7 @@
 *.app/
 *.iconset/
 *.icns
+!Resources/AppIcon.icns
 .DS_Store
 *.dmg
 *.zip

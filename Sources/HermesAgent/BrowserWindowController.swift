@@ -1,5 +1,6 @@
 import AVFoundation
 import Cocoa
+import os
 import UserNotifications
 import WebKit
 
@@ -42,7 +43,14 @@ class BrowserWindow: NSWindow {
 // Lets the first click on the WebView both focus it and register as a content
 // click simultaneously, fixing buttons that appear unresponsive after focus moves away.
 private class HermesWebView: WKWebView {
+    var onEffectiveAppearanceChange: (() -> Void)?
+
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        onEffectiveAppearanceChange?()
+    }
 }
 
 // Fix #64: transparent drag view that sits atop the WKWebView in the title-bar zone.
@@ -75,7 +83,9 @@ private class TitleBarDragView: NSView {
     // No isFlipped override — the view has no subviews or drawing; isFlipped is irrelevant.
 }
 
-class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegate, WKNavigationDelegate, WKScriptMessageHandler {
+class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegate, WKNavigationDelegate,
+    WKScriptMessageHandler
+{
 
     private var webView: HermesWebView!
     private var statusBar: NSView!
@@ -148,6 +158,9 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
     /// which is what AppKit shows on the tab.
     private var pageTitleObservation: NSKeyValueObservation?
 
+    /// Block-based observers for app activation changes; invalidated in deinit.
+    private var appActiveObservers: [NSObjectProtocol] = []
+
     /// - Parameter useFrameAutosave: When true (default), the window persists its
     ///   frame to UserDefaults under HermesMainWindow. Only the *first* window of a
     ///   multi-window session should set this true; secondary windows pass false so
@@ -185,14 +198,10 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
         // (Window menu, Dock, accessibility, Mission Control).
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
-        // Initial appearance — matches whatever the web UI is currently using
-        // (tracked on AppDelegate). The theme bridge in buildUI() updates it
-        // dynamically when the page reports its background color, so the
-        // AppKit chrome (title bar, tab bar, traffic lights, status bar) stays
-        // visually consistent with the page across light/dark/system themes.
-        // Falls back to .darkAqua before the bridge has reported.
+        // Initial appearance — nil is intentional for WebUI theme=system:
+        // AppKit then inherits NSApp.effectiveAppearance and follows macOS
+        // light/dark changes without a cached .aqua/.darkAqua override.
         window.appearance = (NSApp.delegate as? AppDelegate)?.currentAppearance
-            ?? NSAppearance(named: .darkAqua)
 
         // Persist and restore window frame across launches — only for the first
         // (primary) window of the session. Secondary multi-window/tab instances skip
@@ -251,6 +260,7 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
     deinit {
         tabbedWindowsObservation?.invalidate()
         pageTitleObservation?.invalidate()
+        appActiveObservers.forEach(NotificationCenter.default.removeObserver)
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -273,13 +283,160 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
         )
         config.userContentController.addUserScript(pasteScript)
 
-        // Suppress web Notification permission prompts — native macOS notifications handle this instead
-        let notificationScript = WKUserScript(
-            source: "Notification.requestPermission = function(cb) { if (cb) cb('denied'); return Promise.resolve('denied'); };",
+        // Route the WebUI notification API into UNUserNotificationCenter. The
+        // WebUI's requestNotificationPermission and sendBrowserNotification are
+        // defined by deferred scripts, so install the wrappers after they exist.
+        let notificationBridgeScript = WKUserScript(
+            source: """
+                (function() {
+                    const handler = window.webkit && window.webkit.messageHandlers
+                        && window.webkit.messageHandlers.hermesNotify;
+                    if (!handler) return;
+
+                    const callbacks = Object.create(null);
+                    let nextCallbackId = 0;
+                    window.__hermesNativeNotificationPermission = 'default';
+                    window.__hermesNativeBackgrounded = false;
+
+                    window.__hermesNativeNotificationReply = function(id, granted, permission) {
+                        if (permission) window.__hermesNativeNotificationPermission = permission;
+                        const resolve = callbacks[id];
+                        if (!resolve) return;
+                        delete callbacks[id];
+                        resolve(granted ? 'granted' : (permission || 'denied'));
+                    };
+
+                    function requestNativePermission() {
+                        return new Promise(function(resolve) {
+                            const id = String(++nextCallbackId);
+                            callbacks[id] = resolve;
+                            handler.postMessage({type: 'requestAuthorization', id: id});
+                        });
+                    }
+
+                    function refreshNativePermission() {
+                        return new Promise(function(resolve) {
+                            const id = 'status-' + String(++nextCallbackId);
+                            callbacks[id] = resolve;
+                            handler.postMessage({type: 'notificationStatus', id: id});
+                        });
+                    }
+
+                    function sendNativeNotification(title, body, options) {
+                        options = options || {};
+                        handler.postMessage({
+                            type: 'send',
+                            title: String(title || 'Hermes'),
+                            body: String(body || ''),
+                            force: !!options.force,
+                            sid: options.sid == null ? '' : String(options.sid)
+                        });
+                        return Promise.resolve();
+                    }
+
+                    window.__hermesNativeNotificationBridge = {
+                        requestPermission: requestNativePermission,
+                        send: sendNativeNotification,
+                        refreshPermission: refreshNativePermission
+                    };
+
+                    function HermesNativeNotification(title, options) {
+                        sendNativeNotification(title, options && options.body, options);
+                    }
+                    try {
+                        Object.defineProperty(HermesNativeNotification, 'permission', {
+                            configurable: true,
+                            get: function() {
+                                return window.__hermesNativeNotificationPermission || 'default';
+                            }
+                        });
+                        HermesNativeNotification.requestPermission = requestNativePermission;
+                        Object.defineProperty(window, 'Notification', {
+                            configurable: true,
+                            writable: true,
+                            value: HermesNativeNotification
+                        });
+                    } catch (_) {
+                        // WebKit may expose Notification as a non-configurable
+                        // host object. The function-level bridge below does not
+                        // depend on replacing that object.
+                    }
+
+                    function renderNativePermissionStatus(permission) {
+                        permission = permission || window.__hermesNativeNotificationPermission || 'default';
+                        const el = document.getElementById('notificationPermissionStatus');
+                        const btn = document.getElementById('notificationPermissionButton');
+                        if (el) el.textContent = 'Permission: ' + permission;
+                        if (btn) {
+                            btn.disabled = permission === 'granted';
+                            btn.setAttribute('aria-disabled', permission === 'granted' ? 'true' : 'false');
+                        }
+                    }
+
+                    function installWebUINotificationBridge() {
+                        let installed = false;
+                        if (typeof window.requestNotificationPermission === 'function'
+                            && !window.__hermesNativeRequestBridgeInstalled) {
+                            window.requestNotificationPermission = function() {
+                                return requestNativePermission().then(function(permission) {
+                                    renderNativePermissionStatus(permission);
+                                    if (typeof window.showToast === 'function') {
+                                        window.showToast(permission === 'granted'
+                                            ? 'Notifications enabled' : 'Notifications denied', 3000,
+                                            permission === 'granted' ? undefined : 'error');
+                                    }
+                                    return permission;
+                                });
+                            };
+                            window.__hermesNativeRequestBridgeInstalled = true;
+                            installed = true;
+                        }
+                        if (typeof window.updateNotificationPermissionStatus === 'function'
+                            && !window.__hermesNativeStatusBridgeInstalled) {
+                            window.updateNotificationPermissionStatus = function() {
+                                return refreshNativePermission().then(function(permission) {
+                                    renderNativePermissionStatus(permission);
+                                    return permission;
+                                });
+                            };
+                            window.__hermesNativeStatusBridgeInstalled = true;
+                            installed = true;
+                        }
+                        if (typeof window.sendBrowserNotification === 'function'
+                            && !window.__hermesNativeSendBridgeInstalled) {
+                            // Preserve the WebUI notification contract while
+                            // swapping only the delivery mechanism for macOS.
+                            window.sendBrowserNotification = function(title, body, options) {
+                                options = options || {};
+                                const force = !!options.force;
+                                const forceHidden = !!options.forceHidden;
+                                if (!force && !window._notificationsEnabled) return Promise.resolve();
+                                if (!force && !forceHidden && !document.hidden
+                                    && !window.__hermesNativeBackgrounded) return Promise.resolve();
+                                return sendNativeNotification(title, body, options);
+                            };
+                            window.__hermesNativeSendBridgeInstalled = true;
+                            installed = true;
+                        }
+                        renderNativePermissionStatus();
+                        return installed;
+                    }
+                    const installTimer = setInterval(function() {
+                        if (installWebUINotificationBridge()
+                            && window.__hermesNativeRequestBridgeInstalled
+                            && window.__hermesNativeStatusBridgeInstalled
+                            && window.__hermesNativeSendBridgeInstalled) {
+                            clearInterval(installTimer);
+                        }
+                    }, 50);
+                    setTimeout(function() { clearInterval(installTimer); }, 10000);
+                    refreshNativePermission().then(renderNativePermissionStatus);
+                })();
+                """,
             injectionTime: .atDocumentStart,
-            forMainFrameOnly: false
+            forMainFrameOnly: true
         )
-        config.userContentController.addUserScript(notificationScript)
+        config.userContentController.addUserScript(notificationBridgeScript)
 
         // Suppress Web Speech API so hermes-webui falls back to its MediaRecorder + /api/transcribe
         // path. WebKit's built-in webkitSpeechRecognition only uses the macOS local speech model
@@ -291,46 +448,6 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
         )
         config.userContentController.addUserScript(speechSuppressionScript)
 
-        // Notify Swift when the AI finishes a response (streaming settled) and
-        // the window is in the background. Used for macOS notifications (#8).
-        // Only fires on characterData mutations (actual text changes) that settle
-        // for 3s — ignores childList/structural churn to avoid false positives
-        // from scroll virtualisation, cursor blinks, etc.
-        let notifyScript = WKUserScript(
-            source: """
-                (function() {
-                    let debounceTimer = null;
-                    let totalCharsAdded = 0;
-                    const MIN_CHARS = 20;  // ignore tiny updates (timestamps, badges, etc.)
-                    const observer = new MutationObserver((mutations) => {
-                        let charsThisBatch = 0;
-                        for (const m of mutations) {
-                            if (m.type === 'characterData') {
-                                charsThisBatch += (m.target.nodeValue || '').length;
-                            }
-                        }
-                        if (charsThisBatch === 0) return;
-                        totalCharsAdded += charsThisBatch;
-                        clearTimeout(debounceTimer);
-                        debounceTimer = setTimeout(() => {
-                            if (document.hidden && totalCharsAdded >= MIN_CHARS) {
-                                window.webkit.messageHandlers.hermesNotify.postMessage({
-                                    title: 'Hermes',
-                                    body: 'Your response is ready'
-                                });
-                            }
-                            totalCharsAdded = 0;
-                        }, 3000);
-                    });
-                    observer.observe(document.body, {
-                        subtree: true, characterData: true
-                    });
-                })();
-                """,
-            injectionTime: .atDocumentEnd,
-            forMainFrameOnly: true
-        )
-        config.userContentController.addUserScript(notifyScript)
         config.userContentController.add(self, name: "hermesNotify")
 
         // The colour the chrome was painted with at this WKWebView's birth —
@@ -339,7 +456,7 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
         // the theme bridge below to suppress sample reports that match it,
         // and by underPageBackgroundColor + darkModeScript further down so
         // every layer of the WebView paints this colour pre-page-load.
-        let prePaintColor = (NSApp.delegate as? AppDelegate)?.currentBackgroundColor
+        let prePaintColor = (NSApp.delegate as? AppDelegate)?.prePaintBackgroundColor()
             ?? NSColor(red: 0.10, green: 0.10, blue: 0.10, alpha: 1.0)
         let prePaintHex = Self.hexString(for: prePaintColor)
 
@@ -441,18 +558,44 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
                     let pendingColor = null;
                     let pendingHex = null;
                     let pendingTimer = null;
+                    let lastReportedTheme = null;
+                    function currentThemeMode() {
+                        const rawTheme = (localStorage.getItem('hermes-theme') || 'dark').toLowerCase();
+                        return ['light', 'dark', 'system'].includes(rawTheme) ? rawTheme : 'dark';
+                    }
+                    function postTheme(background, theme) {
+                        window.webkit.messageHandlers.hermesTheme.postMessage({
+                            background: background,
+                            theme: theme
+                        });
+                    }
                     function report() {
                         const bg = effectiveBackground();
                         if (!bg) return;
                         const hex = rgbStringToHex(bg);
+                        const theme = currentThemeMode();
+                        const themeChanged = theme !== lastReportedTheme;
                         const currentChromeHex = lastReportedHex || cachedHex;
-                        if (hex === currentChromeHex) {
+                        if (hex === currentChromeHex && !themeChanged) {
                             // Chrome already shows this — drop any pending
                             // transient so the timer doesn't fire later with
                             // a stale "different" colour.
                             pendingColor = null;
                             pendingHex = null;
                             clearTimeout(pendingTimer);
+                            return;
+                        }
+                        if (hex === currentChromeHex && themeChanged) {
+                            // The effective colour can stay identical when the
+                            // user changes system→dark while macOS is already
+                            // dark (or system→light while already light). The
+                            // mode itself is still authoritative for Swift.
+                            pendingColor = null;
+                            pendingHex = null;
+                            clearTimeout(pendingTimer);
+                            lastReportedHex = hex;
+                            lastReportedTheme = theme;
+                            postTheme(bg, theme);
                             return;
                         }
                         if (hex === pendingHex) return;
@@ -462,7 +605,8 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
                         pendingTimer = setTimeout(function() {
                             if (pendingHex === hex) {
                                 lastReportedHex = hex;
-                                window.webkit.messageHandlers.hermesTheme.postMessage(bg);
+                                lastReportedTheme = currentThemeMode();
+                                postTheme(bg, lastReportedTheme);
                             }
                         }, STABILITY_MS);
                     }
@@ -516,6 +660,9 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
         let webFrame = NSRect(
             x: 0, y: statusBarHeight, width: bounds.width, height: bounds.height - statusBarHeight)
         webView = HermesWebView(frame: webFrame, configuration: config)
+        webView.onEffectiveAppearanceChange = { [weak self] in
+            self?.handleEffectiveAppearanceChange()
+        }
         webView.autoresizingMask = [.width, .height]
         webView.uiDelegate = self
         webView.navigationDelegate = self
@@ -540,8 +687,17 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
         let darkModeScript = WKUserScript(
             source: """
                 (function() {
-                    document.documentElement.style.background = '\(prePaintHex)';
-                    if (document.body) { document.body.style.background = '\(prePaintHex)'; }
+                    // For theme=system, resolve the initial paint from the
+                    // current macOS media query rather than the previous RGB
+                    // cache. Explicit light/dark keeps its own pre-paint value.
+                    const mode = (localStorage.getItem('hermes-theme') || 'dark').toLowerCase();
+                    const dark = mode === 'dark'
+                        || (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+                    const color = mode === 'system'
+                        ? (dark ? '#1A1A1A' : '#FEFCF7')
+                        : '\(prePaintHex)';
+                    document.documentElement.style.background = color;
+                    if (document.body) { document.body.style.background = color; }
                 })();
                 """,
             injectionTime: .atDocumentStart,
@@ -557,6 +713,60 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
             forMainFrameOnly: true
         )
         config.userContentController.addUserScript(trafficLightScript)
+
+        // Replace the WebUI welcome mark with the icon bundled by the native wrapper.
+        // The WebUI is external to this repository; `#emptyState .empty-logo` is
+        // its exact central welcome container. Keep the replacement scoped to it
+        // so title-bar and control SVGs are never affected.
+        if let iconURL = Bundle.main.url(forResource: "WelcomeIcon", withExtension: "png"),
+           let iconData = try? Data(contentsOf: iconURL) {
+            let iconDataURL = "data:image/png;base64,\(iconData.base64EncodedString())"
+            let welcomeIconScript = WKUserScript(
+                source: """
+                    (function() {
+                        const iconURL = '\(iconDataURL)';
+                        const selector = '#emptyState .empty-logo';
+
+                        let replacementScheduled = false;
+                        function replaceWelcomeIcon() {
+                            replacementScheduled = false;
+                            const container = document.querySelector(selector);
+                            if (!container) return;
+                            if (container.querySelector('img[data-hermes-native-welcome-icon="true"]')) return;
+
+                            const source = container.querySelector('svg');
+                            if (!source) return;
+
+                            const image = document.createElement('img');
+                            image.src = iconURL;
+                            image.alt = source.getAttribute('aria-label') || 'Hermes';
+                            image.setAttribute('data-hermes-native-welcome-icon', 'true');
+                            image.style.cssText =
+                                'position:relative;z-index:1;display:block;' +
+                                'width:88px;height:88px;object-fit:contain;';
+                            source.replaceWith(image);
+                        }
+
+                        function scheduleReplacement() {
+                            if (replacementScheduled) return;
+                            replacementScheduled = true;
+                            window.requestAnimationFrame(replaceWelcomeIcon);
+                        }
+
+                        const observer = new MutationObserver(scheduleReplacement);
+                        if (document.documentElement) {
+                            observer.observe(document.documentElement, { childList: true, subtree: true });
+                        }
+                        document.addEventListener('DOMContentLoaded', replaceWelcomeIcon, { once: true });
+                        window.addEventListener('load', replaceWelcomeIcon, { once: true });
+                        replaceWelcomeIcon();
+                    })();
+                    """,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            )
+            config.userContentController.addUserScript(welcomeIconScript)
+        }
 
         // Fix #59: hide the web app's .app-titlebar-icon (SVG logo) when running in the
         // Mac wrapper. With .fullSizeContentView the icon sits right next to the traffic
@@ -937,8 +1147,194 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
 
     // MARK: - WKScriptMessageHandler (notifications)
 
-    // Cache auth status so we don't call requestAuthorization on every message.
-    private var notificationAuthGranted: Bool? = nil
+    private static let notificationLogger = Logger(
+        subsystem: "ai.get-hermes.HermesAgent", category: "notifications")
+
+    private static func logNotificationError(_ error: Error, operation: String) {
+        let nsError = error as NSError
+        notificationLogger.error(
+            "\(operation) error domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public) description=\(nsError.localizedDescription, privacy: .public)")
+    }
+
+    private func replyNotificationPermission(
+        id: String?, granted: Bool, permission: String
+    ) {
+        guard let id else { return }
+        let idJSON = (try? JSONEncoder().encode(id)).flatMap { String(data: $0, encoding: .utf8) }
+            ?? "\"\""
+        let permissionJSON = (try? JSONEncoder().encode(permission))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "\"default\""
+        let script = "window.__hermesNativeNotificationReply && "
+            + "window.__hermesNativeNotificationReply(\(idJSON), \(granted), \(permissionJSON));"
+        webView.evaluateJavaScript(script, completionHandler: nil)
+    }
+
+    private func notificationPermissionName(
+        _ status: UNAuthorizationStatus
+    ) -> (granted: Bool, name: String) {
+        switch status {
+        case .authorized, .provisional, .ephemeral:
+            return (true, "granted")
+        case .denied:
+            return (false, "denied")
+        case .notDetermined:
+            return (false, "default")
+        @unknown default:
+            return (false, "default")
+        }
+    }
+
+    private func refreshNotificationStatus(replyID: String?) {
+        let center = UNUserNotificationCenter.current()
+        Self.notificationLogger.info("notificationStatus getSettings begin")
+        center.getNotificationSettings { [weak self] settings in
+            let status = self?.notificationPermissionName(settings.authorizationStatus)
+                ?? (false, "default")
+            Self.notificationLogger.info(
+                "notificationStatus authorizationStatus=\(String(describing: settings.authorizationStatus), privacy: .public) permission=\(status.1, privacy: .public)")
+            let granted = status.0
+            let permission = status.1
+            DispatchQueue.main.async(execute: DispatchWorkItem {
+                self?.replyNotificationPermission(
+                    id: replyID, granted: granted, permission: permission)
+            })
+        }
+    }
+
+    private func requestNotificationAuthorization(replyID: String?) {
+        let center = UNUserNotificationCenter.current()
+        Self.notificationLogger.info("requestAuthorization getSettings begin")
+        center.getNotificationSettings { [weak self] settings in
+            Self.notificationLogger.info(
+                "requestAuthorization authorizationStatusBefore=\(String(describing: settings.authorizationStatus), privacy: .public)")
+            switch settings.authorizationStatus {
+            case .authorized, .provisional, .ephemeral:
+                Self.notificationLogger.info(
+                    "requestAuthorization already granted status=\(String(describing: settings.authorizationStatus), privacy: .public)")
+                DispatchQueue.main.async {
+                    self?.replyNotificationPermission(
+                        id: replyID, granted: true, permission: "granted")
+                }
+            case .denied:
+                Self.notificationLogger.warning("requestAuthorization already denied")
+                DispatchQueue.main.async {
+                    self?.replyNotificationPermission(
+                        id: replyID, granted: false, permission: "denied")
+                }
+            case .notDetermined:
+                Self.notificationLogger.info("requestAuthorization requestAuthorization begin")
+                center.requestAuthorization(options: [.alert, .sound]) { granted, error in
+                    if let error {
+                        Self.logNotificationError(error, operation: "requestAuthorization")
+                    }
+                    Self.notificationLogger.info(
+                        "requestAuthorization completed granted=\(granted, privacy: .public)")
+                    center.getNotificationSettings { finalSettings in
+                        let finalStatus = self?.notificationPermissionName(
+                            finalSettings.authorizationStatus) ?? (false, "default")
+                        Self.notificationLogger.info(
+                            "requestAuthorization authorizationStatusAfter=\(String(describing: finalSettings.authorizationStatus), privacy: .public) permission=\(finalStatus.1, privacy: .public)")
+                        DispatchQueue.main.async(execute: DispatchWorkItem {
+                            self?.replyNotificationPermission(
+                                id: replyID, granted: finalStatus.0,
+                                permission: finalStatus.1)
+                        })
+                    }
+                }
+            @unknown default:
+                Self.notificationLogger.warning("requestAuthorization unknown status")
+                DispatchQueue.main.async {
+                    self?.replyNotificationPermission(
+                        id: replyID, granted: false, permission: "default")
+                }
+            }
+        }
+    }
+
+    static func shouldSendNativeNotification(nativePreferenceEnabled: Bool, force: Bool) -> Bool {
+        force || nativePreferenceEnabled
+    }
+
+    static func notificationIdentifier(
+        title: String, sessionID: String?, fallbackID: String = UUID().uuidString
+    ) -> String {
+        let normalizedTitle = title.lowercased()
+        let kind: String
+        if normalizedTitle.contains("approval") {
+            kind = "approval"
+        } else if normalizedTitle.contains("clarification") {
+            kind = "clarification"
+        } else if normalizedTitle.contains("response") {
+            kind = "response"
+        } else {
+            kind = "message"
+        }
+        let scope = sessionID.flatMap { $0.isEmpty ? nil : $0 } ?? fallbackID
+        return "hermes.\(kind).\(scope)"
+    }
+
+    private func sendNativeNotification(title: String, body: String, sessionID: String?) {
+        let center = UNUserNotificationCenter.current()
+        let addRequest: () -> Void = { [weak self] in
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.body = body
+            content.sound = .default
+            // Coalesce repeated events of the same kind within one session,
+            // without allowing another tab or event type to overwrite it.
+            let request = UNNotificationRequest(
+                identifier: Self.notificationIdentifier(title: title, sessionID: sessionID),
+                content: content,
+                trigger: nil
+            )
+            Self.notificationLogger.info(
+                "center.add begin identifier=\(request.identifier, privacy: .public)")
+            center.add(request) { error in
+                if let error {
+                    Self.logNotificationError(error, operation: "center.add")
+                } else {
+                    Self.notificationLogger.info("center.add completed")
+                }
+                _ = self
+            }
+        }
+
+        Self.notificationLogger.info("send getSettings begin")
+        center.getNotificationSettings { settings in
+            Self.notificationLogger.info(
+                "send authorizationStatus=\(String(describing: settings.authorizationStatus), privacy: .public)")
+            switch settings.authorizationStatus {
+            case .authorized, .provisional, .ephemeral:
+                addRequest()
+            case .notDetermined:
+                Self.notificationLogger.info("send requestAuthorization begin")
+                center.requestAuthorization(options: [.alert, .sound]) { granted, error in
+                    if let error {
+                        Self.logNotificationError(error, operation: "send requestAuthorization")
+                    }
+                    Self.notificationLogger.info(
+                        "send requestAuthorization completed granted=\(granted, privacy: .public)")
+                    center.getNotificationSettings { finalSettings in
+                        Self.notificationLogger.info(
+                            "send authorizationStatusAfter=\(String(describing: finalSettings.authorizationStatus), privacy: .public)")
+                        let finalStatus = self.notificationPermissionName(
+                            finalSettings.authorizationStatus)
+                        guard finalStatus.0 else {
+                            Self.notificationLogger.warning(
+                                "send skipped authorization status=\(String(describing: finalSettings.authorizationStatus), privacy: .public)")
+                            return
+                        }
+                        addRequest()
+                    }
+                }
+            case .denied:
+                Self.notificationLogger.warning("send skipped authorization status=denied")
+            @unknown default:
+                Self.notificationLogger.warning(
+                    "send skipped unknown authorization status=\(String(describing: settings.authorizationStatus), privacy: .public)")
+            }
+        }
+    }
 
     /// Parse a CSS colour string (`rgb(...)`, `rgba(...)`, or `#RRGGBB`/`#RGB`)
     /// into normalised RGB components in [0, 1]. Returns nil on parse failure.
@@ -1001,67 +1397,91 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        // Theme bridge: web UI reports its effective background colour.
-        // Propagate BOTH the appearance (drives AppKit chrome variants — the
-        // .aqua/.darkAqua choice picks the title/tab bar's tonal materials)
-        // AND the actual NSColor (used to tint the SSH footer exactly so the
-        // bottom edge reads as a continuation of the page; also cached as
-        // AppDelegate.currentBackgroundColor for the WKWebView pre-paint
-        // backstop on new tabs and reloads). The native title/tab bar zone
-        // is intentionally NOT painted with this colour — doing so swamped
-        // the tab bar's translucent material and erased the dividers
-        // between tabs (regression fixed in v1.6.3).
-        if message.name == "hermesTheme", let css = message.body as? String {
-            guard let rgb = Self.parseCSSColor(css) else { return }
-            // Default to dark unless the page is genuinely near-white
-            // (issue #70). The threshold lives in
-            // AppDelegate.appearanceForLuminance so the rule is shared with
-            // the cache-load path. Murky-middle samples (transient overlays,
-            // partial mount paints) stay on the dark appearance instead of
-            // flipping the chrome to .aqua and giving the user a flash of
-            // light material.
-            let luminance = 0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b
-            let appearance = AppDelegate.appearanceForLuminance(luminance)
-            // sRGB so the components round-trip cleanly to UserDefaults
-            // (the calibrated-RGB constructor would shift values slightly).
-            let bgColor = NSColor(srgbRed: rgb.r, green: rgb.g, blue: rgb.b, alpha: 1.0)
-            (NSApp.delegate as? AppDelegate)?.updateAppearance(appearance, backgroundColor: bgColor)
-            return
-        }
-        guard message.name == "hermesNotify",
-              let body = message.body as? [String: String],
-              let title = body["title"],
-              let text = body["body"],
-              UserDefaults.standard.bool(forKey: "notificationsEnabled")
-        else { return }
-
-        let center = UNUserNotificationCenter.current()
-
-        func postNotification() {
-            let content = UNMutableNotificationContent()
-            content.title = title
-            content.body = text
-            content.sound = .default
-            // Stable identifier coalesces rapid bursts — only the last one shows.
-            let request = UNNotificationRequest(
-                identifier: "hermes-response-ready",
-                content: content,
-                trigger: nil
-            )
-            center.add(request)
-        }
-
-        if let granted = notificationAuthGranted {
-            if granted { postNotification() }
-            return
-        }
-
-        center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
-            DispatchQueue.main.async {
-                self?.notificationAuthGranted = granted
-                if granted { postNotification() }
+        // Theme bridge: WebUI reports both its exact page colour and its
+        // persisted light/dark/system mode. The mode is authoritative for the
+        // native window appearance; RGB remains only for the SSH footer and
+        // WebView pre-paint backstop.
+        if message.name == "hermesTheme" {
+            let css: String?
+            let themeMode: String?
+            if let body = message.body as? [String: Any] {
+                css = body["background"] as? String
+                themeMode = body["theme"] as? String
+            } else {
+                css = message.body as? String
+                themeMode = nil
             }
+            guard let css, let rgb = Self.parseCSSColor(css) else { return }
+            let luminance = 0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b
+            let appearance = themeMode.map { AppDelegate.appearanceForThemeMode($0) }
+                ?? AppDelegate.appearanceForLuminance(luminance)
+            let bgColor = NSColor(srgbRed: rgb.r, green: rgb.g, blue: rgb.b, alpha: 1.0)
+            (NSApp.delegate as? AppDelegate)?.updateAppearance(
+                appearance, backgroundColor: bgColor, themeMode: themeMode)
+            return
         }
+        guard message.name == "hermesNotify" else { return }
+        let body = message.body as? [String: Any]
+        let type = body?["type"] as? String
+        Self.notificationLogger.info(
+            "received message name=\(message.name, privacy: .public) type=\(type ?? "missing", privacy: .public)")
+        guard let body, let type else {
+            Self.notificationLogger.warning("received malformed hermesNotify message")
+            return
+        }
+
+        switch type {
+        case "requestAuthorization":
+            requestNotificationAuthorization(replyID: body["id"] as? String)
+        case "notificationStatus":
+            refreshNotificationStatus(replyID: body["id"] as? String)
+        case "send":
+            guard let title = body["title"] as? String,
+                  let text = body["body"] as? String
+            else { return }
+            let force = body["force"] as? Bool ?? false
+            guard Self.shouldSendNativeNotification(
+                nativePreferenceEnabled: UserDefaults.standard.bool(forKey: "notificationsEnabled"),
+                force: force
+            ) else {
+                Self.notificationLogger.info("send skipped native preference disabled")
+                return
+            }
+            sendNativeNotification(
+                title: title, body: text, sessionID: body["sid"] as? String)
+        default:
+            Self.notificationLogger.warning("unknown bridge message type=\(type, privacy: .public)")
+        }
+    }
+
+    private func handleEffectiveAppearanceChange() {
+        guard (NSApp.delegate as? AppDelegate)?.currentThemeMode == "system" else { return }
+        // AppKit already repaints the native chrome because the window inherits
+        // its appearance. Re-apply the WebUI system listener as well, so the
+        // WKWebView updates immediately even when WebKit delays its media-query
+        // notification during a macOS appearance transition.
+        webView.evaluateJavaScript(
+            "if (typeof _applyTheme === 'function') _applyTheme('system');",
+            completionHandler: nil
+        )
+        reportCurrentThemeToNative()
+    }
+
+    /// Called by AppDelegate's application-level appearance notification.
+    func systemAppearanceDidChange() {
+        guard (NSApp.delegate as? AppDelegate)?.currentThemeMode == "system" else { return }
+        window?.appearance = nil
+        handleEffectiveAppearanceChange()
+    }
+
+    private func setWebUIBackgrounded(_ backgrounded: Bool) {
+        guard webView != nil else { return }
+        webView.evaluateJavaScript(
+            "window.__hermesNativeBackgrounded = \(backgrounded ? "true" : "false");"
+                + "if (typeof window.__hermesSetBackgrounded === 'function') "
+                + "window.__hermesSetBackgrounded(window.__hermesNativeBackgrounded);",
+            completionHandler: nil
+        )
     }
 
     // MARK: - Zoom level restore (fix #43) + startup fade-in (fix #52)
@@ -1079,6 +1499,11 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
             }
         }
 
+        // Synchronize the native cache immediately with the WebUI's persisted
+        // theme. This avoids leaving a stale light/dark window appearance in
+        // place while the pixel-sampling stability timer is waiting.
+        reportCurrentThemeToNative()
+
         // Fix #57: refine traffic light clearance to exact measured value.
         injectTrafficLightWidthVar()
 
@@ -1095,6 +1520,30 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
         // tabbedWindows KVO observer.
         let tabbed = window?.tabGroup?.isTabBarVisible ?? false
         updateAppTitlebarClass(tabbed: tabbed)
+        setWebUIBackgrounded(!(window?.isKeyWindow ?? false))
+    }
+
+    private func reportCurrentThemeToNative() {
+        webView.evaluateJavaScript(
+            """
+            (function() {
+                try {
+                    var theme = (localStorage.getItem('hermes-theme') || 'dark').toLowerCase();
+                    if (!['light', 'dark', 'system'].includes(theme)) theme = 'dark';
+                    var meta = document.getElementById('hermes-theme-color');
+                    var background = meta && meta.getAttribute('content');
+                    if (background && window.webkit && window.webkit.messageHandlers
+                        && window.webkit.messageHandlers.hermesTheme) {
+                        window.webkit.messageHandlers.hermesTheme.postMessage({
+                            background: background,
+                            theme: theme
+                        });
+                    }
+                } catch (_) {}
+            })();
+            """,
+            completionHandler: nil
+        )
     }
 
     /// Measures the actual right edge of the zoom (green) traffic light button and
@@ -1299,6 +1748,19 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
         // Ensure the WebView holds keyboard focus whenever the window is active,
         // so shortcuts like Cmd+K reach JavaScript without requiring an extra click.
         webView.becomeFirstResponder()
+        setWebUIBackgrounded(false)
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        setWebUIBackgrounded(true)
+    }
+
+    func windowDidMiniaturize(_ notification: Notification) {
+        setWebUIBackgrounded(true)
+    }
+
+    func windowDidDeminiaturize(_ notification: Notification) {
+        setWebUIBackgrounded(!(window?.isKeyWindow ?? false))
     }
 
     // MARK: - Tab-bar-aware layout

@@ -40,21 +40,9 @@ install_name_tool \
     -add_rpath "@executable_path/../Frameworks" \
     "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 
-echo "→ Converting icon..."
-ICONSET="AppIcon.iconset"
-mkdir -p "$ICONSET"
-sips -z 16 16     "Hermes Icon.png" --out "$ICONSET/icon_16x16.png"
-sips -z 32 32     "Hermes Icon.png" --out "$ICONSET/icon_16x16@2x.png"
-sips -z 32 32     "Hermes Icon.png" --out "$ICONSET/icon_32x32.png"
-sips -z 64 64     "Hermes Icon.png" --out "$ICONSET/icon_32x32@2x.png"
-sips -z 128 128   "Hermes Icon.png" --out "$ICONSET/icon_128x128.png"
-sips -z 256 256   "Hermes Icon.png" --out "$ICONSET/icon_128x128@2x.png"
-sips -z 256 256   "Hermes Icon.png" --out "$ICONSET/icon_256x256.png"
-sips -z 512 512   "Hermes Icon.png" --out "$ICONSET/icon_256x256@2x.png"
-sips -z 512 512   "Hermes Icon.png" --out "$ICONSET/icon_512x512.png"
-sips -z 1024 1024 "Hermes Icon.png" --out "$ICONSET/icon_512x512@2x.png"
-iconutil -c icns "$ICONSET" -o "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
-rm -rf "$ICONSET"
+echo "→ Copying icon resources..."
+cp "Resources/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+cp "Resources/WelcomeIcon.png" "$APP_BUNDLE/Contents/Resources/WelcomeIcon.png"
 
 cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -107,11 +95,16 @@ echo "→ Signing (ad-hoc)..."
 codesign --force --deep --sign - "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
 codesign --force --deep --sign - --entitlements Entitlements.plist "$APP_BUNDLE"
 
-echo "→ Installing to Applications..."
-rm -rf "/Applications/$APP_BUNDLE"
-cp -r "$APP_BUNDLE" "/Applications/$APP_BUNDLE"
-
-echo "→ Installed to /Applications/$APP_BUNDLE"
+if [ "${SKIP_INSTALL:-0}" = "1" ]; then
+    echo "→ Skipping installation; local bundle is at $APP_BUNDLE"
+else
+    echo "→ Installing to Applications..."
+    rm -rf "/Applications/$APP_BUNDLE"
+    # Preserve framework symlinks. `cp -r` dereferences Sparkle.framework's
+    # Versions/Current link and invalidates the installed bundle's signature.
+    ditto "$APP_BUNDLE" "/Applications/$APP_BUNDLE"
+    echo "→ Installed to /Applications/$APP_BUNDLE"
+fi
 echo "Note: icon cache refresh is optional and may require sudo if the old icon persists."
 echo "If needed, run these commands manually:"
 echo "  sudo find /private/var/folders -name \"com.apple.dock.iconcache\" -exec rm {} \\; 2>/dev/null || true"

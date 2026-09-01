@@ -614,3 +614,88 @@ final class APINavigationGuardTests: XCTestCase {
         XCTAssertFalse(shouldCancelAsAPINav("http://localhost:8787/api"))
     }
 }
+
+final class NotificationBridgeTests: XCTestCase {
+    // Mirrors BrowserWindowController's pure notification policy helpers.
+    func shouldSendNativeNotification(nativePreferenceEnabled: Bool, force: Bool) -> Bool {
+        force || nativePreferenceEnabled
+    }
+
+    func notificationIdentifier(
+        title: String, sessionID: String?, fallbackID: String = "fallback"
+    ) -> String {
+        let normalizedTitle = title.lowercased()
+        let kind: String
+        if normalizedTitle.contains("approval") {
+            kind = "approval"
+        } else if normalizedTitle.contains("clarification") {
+            kind = "clarification"
+        } else if normalizedTitle.contains("response") {
+            kind = "response"
+        } else {
+            kind = "message"
+        }
+        let scope = sessionID.flatMap { $0.isEmpty ? nil : $0 } ?? fallbackID
+        return "hermes.\(kind).\(scope)"
+    }
+
+    func shouldSendFromWebUI(
+        webPreferenceEnabled: Bool, force: Bool, forceHidden: Bool,
+        documentHidden: Bool, nativeBackgrounded: Bool
+    ) -> Bool {
+        if !force && !webPreferenceEnabled { return false }
+        if !force && !forceHidden && !documentHidden && !nativeBackgrounded { return false }
+        return true
+    }
+
+    func testNativePreferenceBlocksOrdinaryNotifications() {
+        XCTAssertFalse(shouldSendNativeNotification(
+            nativePreferenceEnabled: false, force: false))
+        XCTAssertTrue(shouldSendNativeNotification(
+            nativePreferenceEnabled: true, force: false))
+    }
+
+    func testForcedTestNotificationBypassesNativePreference() {
+        XCTAssertTrue(shouldSendNativeNotification(
+            nativePreferenceEnabled: false, force: true))
+    }
+
+    func testWebNotificationPreservesPreferenceAndBackgroundContract() {
+        XCTAssertFalse(shouldSendFromWebUI(
+            webPreferenceEnabled: false, force: false, forceHidden: false,
+            documentHidden: true, nativeBackgrounded: true))
+        XCTAssertFalse(shouldSendFromWebUI(
+            webPreferenceEnabled: true, force: false, forceHidden: false,
+            documentHidden: false, nativeBackgrounded: false))
+        XCTAssertTrue(shouldSendFromWebUI(
+            webPreferenceEnabled: true, force: false, forceHidden: false,
+            documentHidden: false, nativeBackgrounded: true))
+        XCTAssertTrue(shouldSendFromWebUI(
+            webPreferenceEnabled: true, force: false, forceHidden: true,
+            documentHidden: false, nativeBackgrounded: false))
+        XCTAssertTrue(shouldSendFromWebUI(
+            webPreferenceEnabled: false, force: true, forceHidden: false,
+            documentHidden: false, nativeBackgrounded: false))
+    }
+
+    func testNotificationIdentifiersSeparateSessionsAndEventKinds() {
+        let responseA = notificationIdentifier(
+            title: "Response complete", sessionID: "session-a")
+        let responseB = notificationIdentifier(
+            title: "Response complete", sessionID: "session-b")
+        let approvalA = notificationIdentifier(
+            title: "Approval required", sessionID: "session-a")
+
+        XCTAssertNotEqual(responseA, responseB)
+        XCTAssertNotEqual(responseA, approvalA)
+        XCTAssertEqual(responseA, "hermes.response.session-a")
+    }
+
+    func testNotificationIdentifierHasDeterministicFallbackForTesting() {
+        XCTAssertEqual(
+            notificationIdentifier(
+                title: "Hermes test", sessionID: nil, fallbackID: "fallback"),
+            "hermes.message.fallback"
+        )
+    }
+}
