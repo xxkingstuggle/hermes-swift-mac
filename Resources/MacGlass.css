@@ -2,8 +2,8 @@
    the hosted WebUI remains the source of truth for layout and behaviour. */
 
 :root.hermes-native-glass {
-  --mac-chrome-solid: #202120;
-  --mac-glass-canvas: rgba(17, 18, 19, .92);
+  --mac-chrome-solid: #0f0f10;
+  --mac-glass-canvas: #19191a;
   --mac-glass-surface: rgba(255, 255, 255, .055);
   --mac-glass-hover: rgba(255, 255, 255, .075);
   --mac-glass-selected: rgba(255, 255, 255, .105);
@@ -16,7 +16,7 @@
 
 :root.hermes-native-glass:not(.dark) {
   --mac-chrome-solid: #eeeeef;
-  --mac-glass-canvas: rgba(249, 249, 250, .93);
+  --mac-glass-canvas: #f8f8f9;
   --mac-glass-surface: rgba(255, 255, 255, .58);
   --mac-glass-hover: rgba(255, 255, 255, .66);
   --mac-glass-selected: rgba(255, 255, 255, .80);
@@ -34,7 +34,8 @@ html.hermes-native-glass body {
 
 .hermes-native-glass .app-titlebar,
 .hermes-native-glass .rail,
-.hermes-native-glass .sidebar {
+.hermes-native-glass .sidebar,
+.hermes-native-glass .rightpanel {
   background: var(--mac-chrome-solid) !important;
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
@@ -43,6 +44,55 @@ html.hermes-native-glass body {
 .hermes-native-glass .app-titlebar {
   border-bottom: 1px solid var(--mac-glass-border) !important;
   box-shadow: 0 1px 0 rgba(255, 255, 255, .025) inset;
+}
+
+/* Desktop window chrome: the WebUI titlebar becomes a transparent overlay
+   instead of a full-width layout row. The three columns therefore paint all
+   the way to the native window edge, like Claude's full-size content view. */
+@media (min-width: 641px) {
+  :root.hermes-native-glass {
+    --mac-titlebar-height: 38px;
+  }
+
+  html.hermes-native-glass body.hermes-mac-tabbed {
+    --mac-titlebar-height: 0px;
+  }
+
+  .hermes-native-glass .app-titlebar {
+    position: fixed !important;
+    top: 0;
+    left: var(--hermes-main-left, 348px);
+    right: var(--hermes-main-right, 0px);
+    width: auto;
+    height: var(--mac-titlebar-height) !important;
+    padding: 0 48px 0 28px !important;
+    box-sizing: border-box !important;
+    justify-content: flex-start !important;
+    background: transparent !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    pointer-events: none;
+  }
+
+  .hermes-native-glass .app-titlebar-inner {
+    justify-content: flex-start !important;
+  }
+
+  .hermes-native-glass .layout {
+    height: 100%;
+  }
+
+  .hermes-native-glass .rail {
+    padding-top: calc(var(--mac-titlebar-height) + 8px) !important;
+    box-sizing: border-box;
+  }
+
+  .hermes-native-glass .sidebar,
+  .hermes-native-glass .main,
+  .hermes-native-glass .rightpanel {
+    padding-top: var(--mac-titlebar-height);
+    box-sizing: border-box;
+  }
 }
 
 .hermes-native-glass .rail {
@@ -140,8 +190,16 @@ html.hermes-native-glass body {
   background: var(--mac-glass-canvas) !important;
 }
 
+:root.hermes-native-glass .main .main-view,
+:root.hermes-native-glass .main .chat,
+:root.hermes-native-glass .main .messages,
+:root.hermes-native-glass .main .panel-view,
+:root.hermes-native-glass .main .composer-wrap {
+  background: var(--mac-glass-canvas) !important;
+}
+
 .hermes-native-glass .topbar {
-  background: color-mix(in srgb, var(--mac-glass-canvas) 78%, transparent) !important;
+  background: var(--mac-glass-canvas) !important;
   border-bottom-color: var(--mac-glass-border) !important;
   -webkit-backdrop-filter: blur(24px) saturate(1.25);
   backdrop-filter: blur(24px) saturate(1.25);
@@ -173,7 +231,8 @@ html.hermes-native-glass body {
 @media (prefers-reduced-transparency: reduce) {
   .hermes-native-glass .app-titlebar,
   .hermes-native-glass .rail,
-  .hermes-native-glass .sidebar {
+  .hermes-native-glass .sidebar,
+  .hermes-native-glass .rightpanel {
     background: var(--mac-chrome-solid) !important;
     -webkit-backdrop-filter: none;
     backdrop-filter: none;

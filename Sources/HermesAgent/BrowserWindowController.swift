@@ -723,6 +723,52 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
                         style.id = 'hermes-native-glass-style';
                         style.textContent = \(quotedCSS);
                         (document.head || document.documentElement).appendChild(style);
+
+                        function installMacChromeLayout() {
+                            // Move the injected stylesheet to the end of <head>
+                            // after the document parser has installed WebUI skins.
+                            if (document.head && style.parentNode !== document.head) {
+                                document.head.appendChild(style);
+                            } else if (document.head && document.head.lastElementChild !== style) {
+                                document.head.appendChild(style);
+                            }
+
+                            const main = document.querySelector('.layout > .main');
+                            const layout = document.querySelector('.layout');
+                            if (!main || !layout) return;
+
+                            let updateScheduled = false;
+                            function syncMainFrame() {
+                                updateScheduled = false;
+                                const rect = main.getBoundingClientRect();
+                                const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+                                document.documentElement.style.setProperty(
+                                    '--hermes-main-left', Math.max(0, rect.left) + 'px');
+                                document.documentElement.style.setProperty(
+                                    '--hermes-main-right', Math.max(0, viewportWidth - rect.right) + 'px');
+                            }
+                            function scheduleMainFrameSync() {
+                                if (updateScheduled) return;
+                                updateScheduled = true;
+                                window.requestAnimationFrame(syncMainFrame);
+                            }
+
+                            if (window.__hermesMacChromeResizeObserver) {
+                                window.__hermesMacChromeResizeObserver.disconnect();
+                            }
+                            const resizeObserver = new ResizeObserver(scheduleMainFrameSync);
+                            layout.querySelectorAll(':scope > .rail, :scope > .sidebar, :scope > .main, :scope > .rightpanel')
+                                .forEach(function(column) { resizeObserver.observe(column); });
+                            window.__hermesMacChromeResizeObserver = resizeObserver;
+                            window.addEventListener('resize', scheduleMainFrameSync, {passive: true});
+                            syncMainFrame();
+                        }
+
+                        if (document.readyState === 'loading') {
+                            document.addEventListener('DOMContentLoaded', installMacChromeLayout, {once: true});
+                        } else {
+                            installMacChromeLayout();
+                        }
                     })();
                     """,
                 injectionTime: .atDocumentStart,
