@@ -560,16 +560,22 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
                     const STABILITY_MS = 2500;
                     let pendingColor = null;
                     let pendingHex = null;
+                    let pendingSkin = null;
                     let pendingTimer = null;
                     let lastReportedTheme = null;
+                    let lastReportedSkin = null;
                     function currentThemeMode() {
                         const rawTheme = (localStorage.getItem('hermes-theme') || 'dark').toLowerCase();
                         return ['light', 'dark', 'system'].includes(rawTheme) ? rawTheme : 'dark';
                     }
-                    function postTheme(background, theme) {
+                    function currentSkin() {
+                        return (document.documentElement.dataset.skin || 'default').toLowerCase();
+                    }
+                    function postTheme(background, theme, skin) {
                         window.webkit.messageHandlers.hermesTheme.postMessage({
                             background: background,
-                            theme: theme
+                            theme: theme,
+                            skin: skin
                         });
                     }
                     function report() {
@@ -577,39 +583,46 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
                         if (!bg) return;
                         const hex = rgbStringToHex(bg);
                         const theme = currentThemeMode();
+                        const skin = currentSkin();
                         const themeChanged = theme !== lastReportedTheme;
+                        const skinChanged = skin !== lastReportedSkin;
                         const currentChromeHex = lastReportedHex || cachedHex;
-                        if (hex === currentChromeHex && !themeChanged) {
+                        if (hex === currentChromeHex && !themeChanged && !skinChanged) {
                             // Chrome already shows this — drop any pending
                             // transient so the timer doesn't fire later with
                             // a stale "different" colour.
                             pendingColor = null;
                             pendingHex = null;
+                            pendingSkin = null;
                             clearTimeout(pendingTimer);
                             return;
                         }
-                        if (hex === currentChromeHex && themeChanged) {
+                        if (hex === currentChromeHex && (themeChanged || skinChanged)) {
                             // The effective colour can stay identical when the
                             // user changes system→dark while macOS is already
                             // dark (or system→light while already light). The
                             // mode itself is still authoritative for Swift.
                             pendingColor = null;
                             pendingHex = null;
+                            pendingSkin = null;
                             clearTimeout(pendingTimer);
                             lastReportedHex = hex;
                             lastReportedTheme = theme;
-                            postTheme(bg, theme);
+                            lastReportedSkin = skin;
+                            postTheme(bg, theme, skin);
                             return;
                         }
-                        if (hex === pendingHex) return;
+                        if (hex === pendingHex && skin === pendingSkin) return;
                         pendingColor = bg;
                         pendingHex = hex;
+                        pendingSkin = skin;
                         clearTimeout(pendingTimer);
                         pendingTimer = setTimeout(function() {
-                            if (pendingHex === hex) {
+                            if (pendingHex === hex && pendingSkin === skin) {
                                 lastReportedHex = hex;
                                 lastReportedTheme = currentThemeMode();
-                                postTheme(bg, lastReportedTheme);
+                                lastReportedSkin = currentSkin();
+                                postTheme(bg, lastReportedTheme, lastReportedSkin);
                             }
                         }, STABILITY_MS);
                     }
@@ -618,7 +631,7 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
                         report();
                         observer.observe(document.documentElement, {
                             attributes: true,
-                            attributeFilter: ['class', 'data-theme', 'style', 'data-mode']
+                            attributeFilter: ['class', 'data-theme', 'data-skin', 'style', 'data-mode']
                         });
                         if (document.body) {
                             observer.observe(document.body, {
@@ -723,6 +736,30 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
                         style.id = 'hermes-native-glass-style';
                         style.textContent = \(quotedCSS);
                         (document.head || document.documentElement).appendChild(style);
+
+                        // Keep the Mac presentation family aligned with the
+                        // WebUI skin selector. Accent-only skins intentionally
+                        // share the neutral Mac base; full-palette skins keep
+                        // their own surfaces and component identity.
+                        const macBaseSkins = new Set([
+                            'default', 'ares', 'mono', 'slate',
+                            'poseidon', 'sisyphus', 'charizard'
+                        ]);
+                        function syncMacSkinPresentation() {
+                            const skin = (document.documentElement.dataset.skin || 'default').toLowerCase();
+                            document.documentElement.classList.toggle(
+                                'hermes-mac-base-skin', macBaseSkins.has(skin));
+                        }
+                        syncMacSkinPresentation();
+                        if (window.__hermesMacSkinObserver) {
+                            window.__hermesMacSkinObserver.disconnect();
+                        }
+                        const skinObserver = new MutationObserver(syncMacSkinPresentation);
+                        skinObserver.observe(document.documentElement, {
+                            attributes: true,
+                            attributeFilter: ['data-skin']
+                        });
+                        window.__hermesMacSkinObserver = skinObserver;
 
                         function installMacChromeLayout() {
                             // Move the injected stylesheet to the end of <head>
@@ -1485,19 +1522,21 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        // Theme bridge: WebUI reports both its exact page colour and its
-        // persisted light/dark/system mode. The mode is authoritative for the
-        // native window appearance; RGB remains only for the SSH footer and
-        // WebView pre-paint backstop.
+        // Theme bridge: WebUI reports its exact page colour, persisted theme
+        // mode, and skin. Skin is independent because accent-only changes can
+        // leave the background unchanged while still requiring tab sync.
         if message.name == "hermesTheme" {
             let css: String?
             let themeMode: String?
+            let skin: String?
             if let body = message.body as? [String: Any] {
                 css = body["background"] as? String
                 themeMode = body["theme"] as? String
+                skin = body["skin"] as? String
             } else {
                 css = message.body as? String
                 themeMode = nil
+                skin = nil
             }
             guard let css, let rgb = Self.parseCSSColor(css) else { return }
             let luminance = 0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b
@@ -1505,7 +1544,7 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
                 ?? AppDelegate.appearanceForLuminance(luminance)
             let bgColor = NSColor(srgbRed: rgb.r, green: rgb.g, blue: rgb.b, alpha: 1.0)
             (NSApp.delegate as? AppDelegate)?.updateAppearance(
-                appearance, backgroundColor: bgColor, themeMode: themeMode)
+                appearance, backgroundColor: bgColor, themeMode: themeMode, skin: skin)
             return
         }
         guard message.name == "hermesNotify" else { return }
@@ -1618,13 +1657,15 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
                 try {
                     var theme = (localStorage.getItem('hermes-theme') || 'dark').toLowerCase();
                     if (!['light', 'dark', 'system'].includes(theme)) theme = 'dark';
+                    var skin = (document.documentElement.dataset.skin || 'default').toLowerCase();
                     var meta = document.getElementById('hermes-theme-color');
                     var background = meta && meta.getAttribute('content');
                     if (background && window.webkit && window.webkit.messageHandlers
                         && window.webkit.messageHandlers.hermesTheme) {
                         window.webkit.messageHandlers.hermesTheme.postMessage({
                             background: background,
-                            theme: theme
+                            theme: theme,
+                            skin: skin
                         });
                     }
                 } catch (_) {}

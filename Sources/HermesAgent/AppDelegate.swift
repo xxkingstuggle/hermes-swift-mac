@@ -51,6 +51,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     /// appearance until the WebUI reports its persisted preference.
     var currentThemeMode = "system"
 
+    /// The WebUI skin currently selected by the user. This is independent from
+    /// the theme because accent-only skins can keep the same background colour
+    /// while still needing to propagate to every open tab.
+    var currentSkin = "default"
+
     /// The explicit appearance currently assigned to Hermes windows. This is
     /// nil for `system`, which is intentional: nil makes AppKit inherit
     /// NSApp.effectiveAppearance and follow macOS changes live.
@@ -68,14 +73,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
     private static let systemThemeCacheKey = "themeCacheMode"
 
-    /// Apply the WebUI's theme mode + page-background colour to every Hermes
-    /// window. For `system`, the window appearance is deliberately nil so
-    /// AppKit inherits the system effectiveAppearance and updates it itself.
+    /// Apply the WebUI's theme mode, skin, and page-background colour to every
+    /// Hermes window. For `system`, the window appearance is deliberately nil
+    /// so AppKit inherits the system effectiveAppearance and updates it itself.
     func updateAppearance(
         _ appearance: NSAppearance?, backgroundColor: NSColor? = nil,
-        themeMode: String? = nil
+        themeMode: String? = nil, skin: String? = nil
     ) {
         let normalizedMode = Self.normalizedThemeMode(themeMode)
+        let normalizedSkin = Self.normalizedSkin(skin)
         let targetAppearance: NSAppearance?
         if themeMode != nil {
             targetAppearance = Self.appearanceForThemeMode(normalizedMode)
@@ -85,8 +91,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         let appearanceChanged = targetAppearance?.name != currentAppearance?.name
         let modeChanged = themeMode != nil && normalizedMode != currentThemeMode
         let bgChanged = backgroundColor != nil && backgroundColor != currentBackgroundColor
-        guard appearanceChanged || modeChanged || bgChanged else { return }
+        let skinChanged = skin != nil && normalizedSkin != currentSkin
+        guard appearanceChanged || modeChanged || bgChanged || skinChanged else { return }
         if themeMode != nil { currentThemeMode = normalizedMode }
+        if skin != nil { currentSkin = normalizedSkin }
         if appearanceChanged { currentAppearance = targetAppearance }
         if let bg = backgroundColor { currentBackgroundColor = bg }
         for browser in browserWindows {
@@ -105,7 +113,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             errorWindow?.window?.appearance = targetAppearance
             splashWindow?.window?.appearance = targetAppearance
         }
-        // Cross-tab theme sync: when one tab's bridge fires, push the
+        // Cross-tab appearance sync: when one tab's bridge fires, push the
         // hermes-webui theme + skin from shared localStorage into every other
         // browser window's WKWebView so all tabs in a group render the same
         // theme. Without this, switching the theme in tab A leaves tabs B/C
@@ -116,10 +124,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // in boot.js (loaded as a regular script, not a module), which makes
         // them globals on `window` and reachable from `evaluateJavaScript`.
         // Idempotent — re-applying the same theme is a no-op repaint.
-        if bgChanged || modeChanged { broadcastWebUIThemeSync() }
+        if bgChanged || modeChanged || skinChanged { broadcastWebUIThemeSync() }
         // Persist so next launch + new tabs/windows can open with the last-seen
         // theme instead of flashing dark while the bridge re-checks.
-        if bgChanged || modeChanged { persistCurrentTheme() }
+        if bgChanged || modeChanged || skinChanged { persistCurrentTheme() }
     }
 
     /// Tell every browser window's WKWebView to re-apply theme + skin from
@@ -195,6 +203,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         case "system": return "system"
         default: return "system"
         }
+    }
+
+    static func normalizedSkin(_ raw: String?) -> String {
+        let skin = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return (skin?.isEmpty == false) ? skin! : "default"
     }
 
     static func appearanceForThemeMode(_ mode: String) -> NSAppearance? {
