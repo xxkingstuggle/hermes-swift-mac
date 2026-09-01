@@ -130,10 +130,11 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
     /// The UserDefaults autosave name for the main window frame.
     /// Used for both windowFrameAutosaveName and the derived "NSWindow Frame <name>" key.
     private static let windowAutosaveName = "HermesMainWindow"
-    /// The one native canvas colour used by the fixed Mac workbench before and
-    /// behind WebKit, including the SSH footer and macOS 26 glass host tint.
-    private static let fixedCanvasColor = NSColor(
+    /// The canvas colours used by the Mac wrapper before and behind WebKit.
+    private static let darkCanvasColor = NSColor(
         srgbRed: 25.0 / 255.0, green: 25.0 / 255.0, blue: 26.0 / 255.0, alpha: 1.0)
+    private static let lightCanvasColor = NSColor(
+        srgbRed: 1.0, green: 1.0, blue: 1.0, alpha: 1.0)
     /// Whether this window persists its frame. False for secondary multi-window/tab
     /// instances so they cascade from the front-most window instead of stacking on
     /// the same saved rect.
@@ -205,10 +206,9 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
         window.titleVisibility = .hidden
         window.isOpaque = false
         window.backgroundColor = .clear
-        // The Mac browser uses one fixed dark workbench. WebUI theme/skin
-        // preferences still persist and synchronize, but they no longer tint
-        // native controls or split the window frame into mismatched surfaces.
-        window.appearance = NSAppearance(named: .darkAqua)
+        // Synchronize initial window appearance with cached or active theme mode.
+        let appDelegate = NSApp.delegate as? AppDelegate
+        window.appearance = appDelegate?.currentAppearance
 
         // Persist and restore window frame across launches — only for the first
         // (primary) window of the session. Secondary multi-window/tab instances skip
@@ -461,14 +461,14 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
         // either the cached colour (loaded by AppDelegate.loadCachedTheme on
         // launch) or the safe-dark fallback for first-ever launches. Used by
         // the theme bridge below to suppress sample reports that match it,
-        // and by underPageBackgroundColor + darkModeScript further down so
+        // and by underPageBackgroundColor + themePrePaintScript further down so
         // every layer of the WebView paints this colour pre-page-load.
-        let prePaintColor = Self.fixedCanvasColor
+        let prePaintColor = (NSApp.delegate as? AppDelegate)?.prePaintBackgroundColor()
+            ?? Self.darkCanvasColor
         let prePaintHex = Self.hexString(for: prePaintColor)
 
         // Theme bridge: keep the WebUI preference cache and sibling tabs in
-        // sync. The browser window itself stays on the fixed dark Mac
-        // presentation even when the persisted WebUI theme or skin changes.
+        // sync. Translates WebUI theme state to native window chrome.
         let themeBridgeScript = WKUserScript(
             source: """
                 (function() {
@@ -478,6 +478,8 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
                     // mount colours never flip the chrome unnecessarily.
                     const cachedHex = '\(prePaintHex)'.toUpperCase();
                     let lastReportedHex = null;
+                    let lastReportedTheme = null;
+
                     const isOpaque = (c) =>
                         c && c !== 'transparent' && c !== 'rgba(0, 0, 0, 0)';
                     function rgbStringToHex(s) {
@@ -503,23 +505,12 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
                     }
                     // Prefer the WebUI's own theme-color meta tag when present.
                     // hermes-webui v0.51.x+ exposes a <meta id="hermes-theme-color">
-                    // updated by boot.js whenever theme/skin changes; this is the
-                    // authoritative source of truth and is overlay-resistant
-                    // (modals/lightboxes can't poison it). When the tag is absent
-                    // (older server, raw page, error route) we fall back to pixel
-                    // sampling at three viewport interior points.
+                    // updated by boot.js whenever theme changes.
                     function themeColorMetaBackground() {
                         const meta = document.getElementById('hermes-theme-color');
                         if (!meta) return null;
                         const content = (meta.getAttribute('content') || '').trim();
                         if (!content) return null;
-                        // Defensive: only trust values that match the forms our
-                        // Swift parseCSSColor() accepts (#RGB / #RRGGBB / rgb()
-                        // / rgba()). Anything else (e.g. an unresolved
-                        // `var(--bg)` from a future WebUI bug, an unknown CSS
-                        // colour name) falls through to pixel-sampling rather
-                        // than poisoning lastReportedHex with garbage and
-                        // suppressing every subsequent valid sample.
                         if (!/^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$|^rgba?\\(/.test(content)) return null;
                         return content;
                     }
@@ -528,110 +519,104 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
                         if (meta) return meta;
                         const w = window.innerWidth || 1280;
                         const h = window.innerHeight || 800;
-                        // Sample a few interior points so a single oddly-coloured
-                        // element under the cursor can't dominate the answer.
                         const points = [[w >> 1, h >> 1], [w >> 1, h >> 2], [w >> 2, h >> 1]];
                         for (const [x, y] of points) {
                             const bg = effectiveBackgroundAt(x, y);
                             if (bg) return bg;
                         }
-                        // Fallbacks for when the document hasn't laid out yet.
                         const bodyBg = document.body ? getComputedStyle(document.body).backgroundColor : null;
                         if (isOpaque(bodyBg)) return bodyBg;
                         return getComputedStyle(document.documentElement).backgroundColor;
                     }
-                    // Two-layer suppression to prevent transient mount flickers
-                    // (chrome was already cream from cache → page briefly paints
-                    // dark during React mount → page settles back to cream).
-                    //
-                    //   1. Match-suppression: if the sample matches the colour
-                    //      the chrome currently shows (cachedHex initially, then
-                    //      lastReportedHex after the bridge has fired), do
-                    //      nothing — the chrome is already correct, no IPC, no
-                    //      flicker. Any pending transient is also cleared so a
-                    //      mid-flight dark sample never gets sent if the page
-                    //      settles back to the chrome colour.
-                    //
-                    //   2. Stability gate: when the sample DOES differ from the
-                    //      chrome's current colour, queue it and only fire if
-                    //      it stays unchanged for STABILITY_MS. Real theme
-                    //      changes propagate after the short delay; transients
-                    //      are dropped before the timer fires.
-                    const STABILITY_MS = 2500;
-                    let pendingColor = null;
-                    let pendingHex = null;
-                    let pendingSkin = null;
-                    let pendingTimer = null;
-                    let lastReportedTheme = null;
-                    let lastReportedSkin = null;
+
                     function currentThemeMode() {
                         const rawTheme = (localStorage.getItem('hermes-theme') || 'dark').toLowerCase();
                         return ['light', 'dark', 'system'].includes(rawTheme) ? rawTheme : 'dark';
                     }
-                    function currentSkin() {
-                        return (document.documentElement.dataset.skin || 'default').toLowerCase();
+                    function isDarkTheme() {
+                        const mode = currentThemeMode();
+                        if (mode === 'dark') return true;
+                        if (mode === 'light') return false;
+                        return window.matchMedia('(prefers-color-scheme: dark)').matches;
                     }
-                    function postTheme(background, theme, skin) {
-                        window.webkit.messageHandlers.hermesTheme.postMessage({
-                            background: background,
-                            theme: theme,
-                            skin: skin
-                        });
+                    function syncThemeAttributes() {
+                        delete document.documentElement.dataset.skin;
+                        if (document.body && document.body.dataset.skin) {
+                            delete document.body.dataset.skin;
+                        }
+                        try {
+                            if (localStorage.getItem('hermes-skin') !== 'default') {
+                                localStorage.setItem('hermes-skin', 'default');
+                            }
+                        } catch (_) {}
+                        const dark = isDarkTheme();
+                        document.documentElement.classList.toggle('dark', dark);
+                        document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+                        if (document.body) {
+                            document.body.setAttribute('data-theme', dark ? 'dark' : 'light');
+                        }
                     }
+                    function postTheme(background, theme) {
+                        syncThemeAttributes();
+                        if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.hermesTheme) {
+                            window.webkit.messageHandlers.hermesTheme.postMessage({
+                                background: background,
+                                theme: theme,
+                                skin: 'default'
+                            });
+                        }
+                    }
+
+                    const STABILITY_MS = 2500;
+                    let pendingColor = null;
+                    let pendingHex = null;
+                    let pendingTimer = null;
+
                     function report() {
+                        syncThemeAttributes();
                         const bg = effectiveBackground();
                         if (!bg) return;
                         const hex = rgbStringToHex(bg);
                         const theme = currentThemeMode();
-                        const skin = currentSkin();
                         const themeChanged = theme !== lastReportedTheme;
-                        const skinChanged = skin !== lastReportedSkin;
                         const currentChromeHex = lastReportedHex || cachedHex;
-                        if (hex === currentChromeHex && !themeChanged && !skinChanged) {
-                            // Chrome already shows this — drop any pending
-                            // transient so the timer doesn't fire later with
-                            // a stale "different" colour.
+
+                        if (themeChanged) {
                             pendingColor = null;
                             pendingHex = null;
-                            pendingSkin = null;
-                            clearTimeout(pendingTimer);
-                            return;
-                        }
-                        if (hex === currentChromeHex && (themeChanged || skinChanged)) {
-                            // The effective colour can stay identical when the
-                            // user changes system→dark while macOS is already
-                            // dark (or system→light while already light). The
-                            // mode itself is still authoritative for Swift.
-                            pendingColor = null;
-                            pendingHex = null;
-                            pendingSkin = null;
                             clearTimeout(pendingTimer);
                             lastReportedHex = hex;
                             lastReportedTheme = theme;
-                            lastReportedSkin = skin;
-                            postTheme(bg, theme, skin);
+                            postTheme(bg, theme);
                             return;
                         }
-                        if (hex === pendingHex && skin === pendingSkin) return;
+
+                        if (hex === currentChromeHex) {
+                            pendingColor = null;
+                            pendingHex = null;
+                            clearTimeout(pendingTimer);
+                            return;
+                        }
+
+                        if (hex === pendingHex) return;
                         pendingColor = bg;
                         pendingHex = hex;
-                        pendingSkin = skin;
                         clearTimeout(pendingTimer);
                         pendingTimer = setTimeout(function() {
-                            if (pendingHex === hex && pendingSkin === skin) {
+                            if (pendingHex === hex) {
                                 lastReportedHex = hex;
                                 lastReportedTheme = currentThemeMode();
-                                lastReportedSkin = currentSkin();
-                                postTheme(bg, lastReportedTheme, lastReportedSkin);
+                                postTheme(bg, lastReportedTheme);
                             }
                         }, STABILITY_MS);
                     }
                     const observer = new MutationObserver(() => requestAnimationFrame(report));
                     function start() {
+                        syncThemeAttributes();
                         report();
                         observer.observe(document.documentElement, {
                             attributes: true,
-                            attributeFilter: ['class', 'data-theme', 'data-skin', 'style', 'data-mode']
+                            attributeFilter: ['class', 'data-theme', 'style', 'data-mode']
                         });
                         if (document.body) {
                             observer.observe(document.body, {
@@ -639,10 +624,6 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
                                 attributeFilter: ['class', 'data-theme', 'style', 'data-mode']
                             });
                         }
-                        // Watch the theme-color meta tag's content attribute too
-                        // — this is the new authoritative signal in v0.51.x+.
-                        // boot.js updates it on every theme/skin change, so we
-                        // catch toggles without waiting for the 2s poll tick.
                         const themeMeta = document.getElementById('hermes-theme-color');
                         if (themeMeta) {
                             observer.observe(themeMeta, {
@@ -650,10 +631,6 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
                                 attributeFilter: ['content']
                             });
                         }
-                        // Belt-and-suspenders: poll every 2s. Web apps that toggle
-                        // theme via CSS-custom-property updates won't trigger our
-                        // attribute-watcher, but the resulting backgroundColor change
-                        // will be visible to elementsFromPoint on the next sample.
                         setInterval(report, 2000);
                     }
                     if (document.readyState === 'loading') {
@@ -694,20 +671,31 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
 
         // Fix #23 / #52: prevent white-or-wrong-colour flash on startup. The
         // overscroll gutter and the body/html pre-paint background both need
-        // to match what the page will eventually render — using the cached
-        // colour avoids the dark flash that the old hardcoded #1a1a1a caused
-        // on light themes during reload / new tab.
+        // to match what the page will eventually render.
         if #available(macOS 12.0, *) {
             webView.underPageBackgroundColor = .clear
         }
         let darkModeScript = WKUserScript(
             source: """
                 (function() {
-                    // The native Mac wrapper deliberately has one fixed dark
-                    // presentation, independent of the persisted WebUI skin.
-                    const color = '\(prePaintHex)';
-                    document.documentElement.style.background = color;
-                    if (document.body) { document.body.style.background = color; }
+                    try {
+                        delete document.documentElement.dataset.skin;
+                        if (localStorage.getItem('hermes-skin') !== 'default') {
+                            localStorage.setItem('hermes-skin', 'default');
+                        }
+                        const mode = (localStorage.getItem('hermes-theme') || 'dark').toLowerCase();
+                        const isDark = mode === 'dark' || (mode !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+                        const bg = isDark ? '#19191a' : '#ffffff';
+                        document.documentElement.style.background = bg;
+                        if (document.body) { document.body.style.background = bg; }
+                        if (isDark) {
+                            document.documentElement.classList.add('dark');
+                            document.documentElement.setAttribute('data-theme', 'dark');
+                        } else {
+                            document.documentElement.classList.remove('dark');
+                            document.documentElement.setAttribute('data-theme', 'light');
+                        }
+                    } catch (_) {}
                 })();
                 """,
             injectionTime: .atDocumentStart,
@@ -725,8 +713,7 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
             let macGlassScript = WKUserScript(
                 source: """
                     (function() {
-                        document.documentElement.classList.add(
-                            'hermes-native-glass', 'hermes-mac-fixed-theme');
+                        document.documentElement.classList.add('hermes-native-glass');
                         const style = document.createElement('style');
                         style.id = 'hermes-native-glass-style';
                         style.textContent = \(quotedCSS);
@@ -954,16 +941,27 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
 
         // Only add status bar in SSH mode
         if connectionMode == "ssh" {
-            // Plain NSView with an explicit colour — we want the SSH footer to
-            // match the page background EXACTLY, so the bottom edge reads as a
-            // continuation of the page. An NSVisualEffectView would introduce
-            // vibrancy that tints the colour off, breaking the visual seam.
-            // The bar uses the fixed Mac canvas colour, matching the chat edge.
             let bar = NSView(
                 frame: NSRect(x: 0, y: 0, width: bounds.width, height: statusBarHeight))
             bar.autoresizingMask = [.width]
             bar.wantsLayer = true
-            bar.layer?.backgroundColor = Self.fixedCanvasColor.cgColor
+            let isDark: Bool
+            if let appDelegate = NSApp.delegate as? AppDelegate {
+                switch appDelegate.currentThemeMode {
+                case "light": isDark = false
+                case "dark": isDark = true
+                case "system":
+                    isDark = (window?.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua)
+                default:
+                    isDark = true
+                }
+            } else {
+                isDark = true
+            }
+            let initialBarColor = isDark
+                ? NSColor(srgbRed: 15.0 / 255.0, green: 15.0 / 255.0, blue: 16.0 / 255.0, alpha: 1.0)
+                : NSColor(srgbRed: 240.0 / 255.0, green: 240.0 / 255.0, blue: 242.0 / 255.0, alpha: 1.0)
+            bar.layer?.backgroundColor = initialBarColor.cgColor
             statusBar = bar
             contentView.addSubview(statusBar)
 
@@ -1493,23 +1491,38 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
         if message.name == "hermesTheme" {
             let css: String?
             let themeMode: String?
-            let skin: String?
             if let body = message.body as? [String: Any] {
                 css = body["background"] as? String
                 themeMode = body["theme"] as? String
-                skin = body["skin"] as? String
             } else {
                 css = message.body as? String
                 themeMode = nil
-                skin = nil
             }
-            guard let css, let rgb = Self.parseCSSColor(css) else { return }
-            let luminance = 0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b
-            let appearance = themeMode.map { AppDelegate.appearanceForThemeMode($0) }
-                ?? AppDelegate.appearanceForLuminance(luminance)
-            let bgColor = NSColor(srgbRed: rgb.r, green: rgb.g, blue: rgb.b, alpha: 1.0)
+            let normalizedMode = AppDelegate.normalizedThemeMode(themeMode)
+            let isDark: Bool
+            if normalizedMode == "light" {
+                isDark = false
+            } else if normalizedMode == "dark" {
+                isDark = true
+            } else if normalizedMode == "system" {
+                isDark = (NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua)
+            } else if let css = css, let rgb = Self.parseCSSColor(css) {
+                let luminance = 0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b
+                isDark = luminance <= 0.85
+            } else {
+                isDark = true
+            }
+
+            let appearance = AppDelegate.appearanceForThemeMode(normalizedMode)
+                ?? (css.flatMap(Self.parseCSSColor).map { rgb in
+                    let lum = 0.2126 * rgb.0 + 0.7152 * rgb.1 + 0.0722 * rgb.2
+                    return AppDelegate.appearanceForLuminance(lum)
+                } ?? nil)
+            let bgColor = isDark
+                ? Self.darkCanvasColor
+                : Self.lightCanvasColor
             (NSApp.delegate as? AppDelegate)?.updateAppearance(
-                appearance, backgroundColor: bgColor, themeMode: themeMode, skin: skin)
+                appearance, backgroundColor: bgColor, themeMode: themeMode, skin: "default")
             return
         }
         guard message.name == "hermesNotify" else { return }
@@ -1562,8 +1575,9 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
     /// Called by AppDelegate's application-level appearance notification.
     func systemAppearanceDidChange() {
         guard (NSApp.delegate as? AppDelegate)?.currentThemeMode == "system" else { return }
-        window?.appearance = NSAppearance(named: .darkAqua)
+        window?.appearance = nil
         handleEffectiveAppearanceChange()
+        applyChromeBackgroundColor(Self.darkCanvasColor)
     }
 
     private func setWebUIBackgrounded(_ backgrounded: Bool) {
@@ -1620,17 +1634,29 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
             """
             (function() {
                 try {
+                    delete document.documentElement.dataset.skin;
+                    if (localStorage.getItem('hermes-skin') !== 'default') {
+                        localStorage.setItem('hermes-skin', 'default');
+                    }
                     var theme = (localStorage.getItem('hermes-theme') || 'dark').toLowerCase();
                     if (!['light', 'dark', 'system'].includes(theme)) theme = 'dark';
-                    var skin = (document.documentElement.dataset.skin || 'default').toLowerCase();
+                    var isDark = theme === 'dark' || (theme !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+                    document.documentElement.classList.toggle('dark', isDark);
+                    document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
+                    if (document.body) {
+                        document.body.setAttribute('data-theme', isDark ? 'dark' : 'light');
+                    }
                     var meta = document.getElementById('hermes-theme-color');
                     var background = meta && meta.getAttribute('content');
-                    if (background && window.webkit && window.webkit.messageHandlers
+                    if (!background) {
+                        background = isDark ? '#19191a' : '#ffffff';
+                    }
+                    if (window.webkit && window.webkit.messageHandlers
                         && window.webkit.messageHandlers.hermesTheme) {
                         window.webkit.messageHandlers.hermesTheme.postMessage({
                             background: background,
                             theme: theme,
-                            skin: skin
+                            skin: 'default'
                         });
                     }
                 } catch (_) {}
@@ -1925,15 +1951,28 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
         updateWebViewLayout()
     }
 
-    /// Refresh native chrome after a WebUI theme event. The reported colour is
-    /// intentionally ignored: the Mac wrapper owns one fixed canvas/tint while
-    /// the WebUI preference continues to persist and sync across tabs.
+    /// Refresh native chrome after a WebUI theme event.
     func applyChromeBackgroundColor(_ color: NSColor) {
-        _ = color  // WebUI still reports its preference; native chrome stays fixed.
-        let fixedColor = Self.fixedCanvasColor
-        statusBar?.layer?.backgroundColor = fixedColor.cgColor
+        let isDark: Bool
+        if let mode = (NSApp.delegate as? AppDelegate)?.currentThemeMode {
+            switch mode {
+            case "light": isDark = false
+            case "dark": isDark = true
+            case "system":
+                isDark = (window?.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua)
+            default:
+                isDark = Self.cssColorIsDark(Self.hexString(for: color))
+            }
+        } else {
+            isDark = (window?.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua)
+        }
+
+        let barColor = isDark
+            ? NSColor(srgbRed: 15.0 / 255.0, green: 15.0 / 255.0, blue: 16.0 / 255.0, alpha: 1.0)
+            : NSColor(srgbRed: 240.0 / 255.0, green: 240.0 / 255.0, blue: 242.0 / 255.0, alpha: 1.0)
+        statusBar?.layer?.backgroundColor = barColor.cgColor
         if #available(macOS 26.0, *), let glassHost = webViewHost as? NSGlassEffectView {
-            glassHost.tintColor = fixedColor.withAlphaComponent(0.16)
+            glassHost.tintColor = barColor.withAlphaComponent(0.16)
         }
         // Re-resolve the separator colour in the new appearance so its tone
         // matches the surroundings (1-px line, but still nice to keep crisp).

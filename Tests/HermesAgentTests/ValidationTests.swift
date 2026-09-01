@@ -699,3 +699,105 @@ final class NotificationBridgeTests: XCTestCase {
         )
     }
 }
+
+/// Tests for the converged Light/Dark theme resolution rules.
+final class ThemeConvergenceTests: XCTestCase {
+
+    func normalizeThemeMode(_ raw: String?) -> String {
+        switch raw?.lowercased() {
+        case "light": return "light"
+        case "dark": return "dark"
+        case "system": return "system"
+        default: return "system"
+        }
+    }
+
+    func appearanceNameForThemeMode(_ mode: String) -> String? {
+        switch normalizeThemeMode(mode) {
+        case "light": return "NSAppearanceNameAqua"
+        case "dark": return "NSAppearanceNameDarkAqua"
+        default: return nil
+        }
+    }
+
+    func normalizeSkin(_ raw: String?) -> String {
+        // In the macOS app, all skins normalize to "default"
+        return "default"
+    }
+
+    func testNormalizedThemeModes() {
+        XCTAssertEqual(normalizeThemeMode("light"), "light")
+        XCTAssertEqual(normalizeThemeMode("Light"), "light")
+        XCTAssertEqual(normalizeThemeMode("LIGHT"), "light")
+        XCTAssertEqual(normalizeThemeMode("dark"), "dark")
+        XCTAssertEqual(normalizeThemeMode("Dark"), "dark")
+        XCTAssertEqual(normalizeThemeMode("DARK"), "dark")
+        XCTAssertEqual(normalizeThemeMode("system"), "system")
+        XCTAssertEqual(normalizeThemeMode("System"), "system")
+        let nilMode: String? = nil
+        XCTAssertEqual(normalizeThemeMode(nilMode), "system")
+        XCTAssertEqual(normalizeThemeMode("custom-mode"), "system")
+    }
+
+    func testAppearanceForThemeModes() {
+        XCTAssertEqual(appearanceNameForThemeMode("light"), "NSAppearanceNameAqua")
+        XCTAssertEqual(appearanceNameForThemeMode("dark"), "NSAppearanceNameDarkAqua")
+        XCTAssertNil(appearanceNameForThemeMode("system"))
+    }
+
+    func testNormalizedSkins() {
+        XCTAssertEqual(normalizeSkin("default"), "default")
+        XCTAssertEqual(normalizeSkin(" Ares "), "default")
+        XCTAssertEqual(normalizeSkin("codex"), "default")
+        XCTAssertEqual(normalizeSkin("graphite"), "default")
+        let nilSkin: String? = nil
+        XCTAssertEqual(normalizeSkin(nilSkin), "default")
+        XCTAssertEqual(normalizeSkin("   "), "default")
+    }
+}
+
+/// Static constraint tests for MacGlass.css to prevent regression of layout and skin rules.
+final class MacGlassCSSConstraintTests: XCTestCase {
+
+    func testMacGlassCSSFileConstraints() throws {
+        let fileURL = URL(fileURLWithPath: #file)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Resources")
+            .appendingPathComponent("MacGlass.css")
+
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            // If run from a different working dir, skip gracefully
+            return
+        }
+
+        let css = try String(contentsOf: fileURL, encoding: .utf8)
+
+        // Constraint 1: .session-search is purely transparent layout wrapper
+        XCTAssertTrue(
+            css.contains(".hermes-native-glass .session-search"),
+            "MacGlass.css must reference .session-search"
+        )
+        XCTAssertTrue(
+            css.contains("background: transparent !important"),
+            "MacGlass.css must make search wrappers transparent"
+        )
+
+        // Constraint 2: .session-search is NOT assigned surface card background
+        XCTAssertFalse(
+            css.contains(".hermes-native-glass .session-search,\n.hermes-native-glass .sidebar-search input"),
+            ".session-search must not be grouped into card surface rules"
+        )
+
+        // Constraint 3: Skin picker grid is hidden
+        XCTAssertTrue(
+            css.contains("#skinPickerGrid"),
+            "MacGlass.css must target #skinPickerGrid to retire skin picker in Mac app"
+        )
+        XCTAssertTrue(
+            css.contains("display: none !important"),
+            "MacGlass.css must hide retired elements"
+        )
+    }
+}

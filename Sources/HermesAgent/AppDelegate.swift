@@ -51,9 +51,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     /// appearance until the WebUI reports its persisted preference.
     var currentThemeMode = "system"
 
-    /// The WebUI skin currently selected by the user. This is independent from
-    /// the theme because accent-only skins can keep the same background colour
-    /// while still needing to propagate to every open tab.
+    /// In the native macOS app, the presentation is converged to Light/Dark themes
+    /// and skins are retired to "default".
     var currentSkin = "default"
 
     /// The explicit appearance currently assigned to Hermes windows. This is
@@ -73,15 +72,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
     private static let systemThemeCacheKey = "themeCacheMode"
 
-    /// Keep WebUI theme/skin preferences synchronized across windows. Browser
-    /// windows deliberately retain the fixed dark Mac presentation; auxiliary
-    /// native windows may still follow the stored appearance preference.
+    /// Keep WebUI theme preferences synchronized across windows.
     func updateAppearance(
         _ appearance: NSAppearance?, backgroundColor: NSColor? = nil,
         themeMode: String? = nil, skin: String? = nil
     ) {
         let normalizedMode = Self.normalizedThemeMode(themeMode)
-        let normalizedSkin = Self.normalizedSkin(skin)
         let targetAppearance: NSAppearance?
         if themeMode != nil {
             targetAppearance = Self.appearanceForThemeMode(normalizedMode)
@@ -91,22 +87,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         let appearanceChanged = targetAppearance?.name != currentAppearance?.name
         let modeChanged = themeMode != nil && normalizedMode != currentThemeMode
         let bgChanged = backgroundColor != nil && backgroundColor != currentBackgroundColor
-        let skinChanged = skin != nil && normalizedSkin != currentSkin
-        guard appearanceChanged || modeChanged || bgChanged || skinChanged else { return }
+        guard appearanceChanged || modeChanged || bgChanged else { return }
         if themeMode != nil { currentThemeMode = normalizedMode }
-        if skin != nil { currentSkin = normalizedSkin }
         if appearanceChanged { currentAppearance = targetAppearance }
         if let bg = backgroundColor { currentBackgroundColor = bg }
         for browser in browserWindows {
             if appearanceChanged || modeChanged {
-                browser.window?.appearance = NSAppearance(named: .darkAqua)
+                browser.window?.appearance = targetAppearance
             }
             if let bg = backgroundColor {
-                // SSH footer is the only chrome surface that takes the exact
-                // page RGB — it has no native treatment, so matching the page
-                // edge precisely reads as "page extends to the bottom of the
-                // window." The native title/tab bar zone is left to AppKit
-                // so its tonal materials and tab separators stay visible.
+                // SSH footer matches the page background color.
                 browser.applyChromeBackgroundColor(bg)
             }
         }
@@ -116,23 +106,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             splashWindow?.window?.appearance = targetAppearance
         }
         // Cross-tab appearance sync: when one tab's bridge fires, push the
-        // hermes-webui theme + skin from shared localStorage into every other
+        // hermes-webui theme from shared localStorage into every other
         // browser window's WKWebView so all tabs in a group render the same
-        // theme. Without this, switching the theme in tab A leaves tabs B/C
-        // visually stuck on whatever theme they last loaded with — until the
-        // user manually reloads them. hermes-webui's boot.js doesn't listen
-        // for `storage` events (verified May 2026), so we drive the re-apply
-        // explicitly. `_applyTheme` and `_applySkin` are top-level functions
-        // in boot.js (loaded as a regular script, not a module), which makes
-        // them globals on `window` and reachable from `evaluateJavaScript`.
-        // Idempotent — re-applying the same theme is a no-op repaint.
-        if bgChanged || modeChanged || skinChanged { broadcastWebUIThemeSync() }
+        // theme.
+        if bgChanged || modeChanged { broadcastWebUIThemeSync() }
         // Persist so next launch + new tabs/windows can open with the last-seen
         // theme instead of flashing dark while the bridge re-checks.
-        if bgChanged || modeChanged || skinChanged { persistCurrentTheme() }
+        if bgChanged || modeChanged { persistCurrentTheme() }
     }
 
-    /// Tell every browser window's WKWebView to re-apply theme + skin from
+    /// Tell every browser window's WKWebView to re-apply theme from
     /// the (shared) localStorage. Called from updateAppearance when the
     /// background colour changes, so all open tabs converge on whichever
     /// tab's bridge fired most recently.
@@ -140,17 +123,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         let script = """
             (function() {
                 try {
+                    delete document.documentElement.dataset.skin;
+                    if (localStorage.getItem('hermes-skin') !== 'default') {
+                        localStorage.setItem('hermes-skin', 'default');
+                    }
                     if (typeof _applyTheme === 'function') {
                         _applyTheme(localStorage.getItem('hermes-theme') || 'dark');
                     }
-                    if (typeof _applySkin === 'function') {
-                        _applySkin(localStorage.getItem('hermes-skin') || 'default');
-                    }
                     if (typeof _syncThemePicker === 'function') {
                         _syncThemePicker(localStorage.getItem('hermes-theme') || 'dark');
-                    }
-                    if (typeof _syncSkinPicker === 'function') {
-                        _syncSkinPicker(localStorage.getItem('hermes-skin') || 'default');
                     }
                 } catch (e) { /* boot.js not yet loaded; next page load picks up the value */ }
             })();
@@ -180,6 +161,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         currentThemeMode = Self.normalizedThemeMode(
             defaults.string(forKey: Self.systemThemeCacheKey))
         currentAppearance = Self.appearanceForThemeMode(currentThemeMode)
+        let isDark: Bool
+        switch currentThemeMode {
+        case "light": isDark = false
+        case "dark": isDark = true
+        case "system": isDark = (NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua)
+        default: isDark = true
+        }
+        currentBackgroundColor = isDark
+            ? NSColor(srgbRed: 25.0 / 255.0, green: 25.0 / 255.0, blue: 26.0 / 255.0, alpha: 1.0)
+            : NSColor(srgbRed: 1.0, green: 1.0, blue: 1.0, alpha: 1.0)
         guard defaults.object(forKey: Self.themeCacheKeyTimestamp) != nil else { return }
         let timestamp = defaults.double(forKey: Self.themeCacheKeyTimestamp)
         let age = Date().timeIntervalSince1970 - timestamp
@@ -207,9 +198,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         }
     }
 
+    /// In the native macOS app, any skin is normalized to "default".
     static func normalizedSkin(_ raw: String?) -> String {
-        let skin = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return (skin?.isEmpty == false) ? skin! : "default"
+        return "default"
     }
 
     static func appearanceForThemeMode(_ mode: String) -> NSAppearance? {
@@ -220,15 +211,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         }
     }
 
-    /// Choose a conservative pre-paint colour for a WebView whose theme is
-    /// system-controlled. The page replaces this immediately from its own
-    /// theme variables; this only prevents a wrong-colour gutter during load.
+    /// Choose a conservative pre-paint colour for a WebView based on active theme mode.
     func prePaintBackgroundColor() -> NSColor {
-        guard currentThemeMode == "system" else { return currentBackgroundColor }
-        let dark = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-        return dark
-            ? NSColor(srgbRed: 0.10, green: 0.10, blue: 0.10, alpha: 1.0)
-            : NSColor(srgbRed: 0.996, green: 0.988, blue: 0.969, alpha: 1.0)
+        let isDark: Bool
+        switch currentThemeMode {
+        case "light":
+            isDark = false
+        case "dark":
+            isDark = true
+        case "system":
+            isDark = (NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua)
+        default:
+            isDark = true
+        }
+        return isDark
+            ? NSColor(srgbRed: 25.0 / 255.0, green: 25.0 / 255.0, blue: 26.0 / 255.0, alpha: 1.0)
+            : NSColor(srgbRed: 1.0, green: 1.0, blue: 1.0, alpha: 1.0)
     }
 
     /// Map a luminance value (0…1) to an NSAppearance, biased to dark
