@@ -72,6 +72,7 @@ jobs:
           # Copy the same icon resources used by the local build and WebUI welcome page.
           cp "Resources/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
           cp "Resources/WelcomeIcon.png" "$APP_BUNDLE/Contents/Resources/WelcomeIcon.png"
+          cp "Resources/MacGlass.css" "$APP_BUNDLE/Contents/Resources/MacGlass.css"
 
           # Write Info.plist
           /usr/libexec/PlistBuddy -c "Add :CFBundleName string 'Hermes Agent'"              "$APP_BUNDLE/Contents/Info.plist"

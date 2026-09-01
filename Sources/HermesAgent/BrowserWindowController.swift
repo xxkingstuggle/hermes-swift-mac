@@ -88,6 +88,7 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
 {
 
     private var webView: HermesWebView!
+    private var webViewHost: NSView!
     private var statusBar: NSView!
 
     /// Exposes the WKWebView for zoom operations called from AppDelegate menu actions.
@@ -198,6 +199,8 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
         // (Window menu, Dock, accessibility, Mission Control).
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
+        window.isOpaque = false
+        window.backgroundColor = .clear
         // Initial appearance — nil is intentional for WebUI theme=system:
         // AppKit then inherits NSApp.effectiveAppearance and follows macOS
         // light/dark changes without a cached .aqua/.darkAqua override.
@@ -682,7 +685,7 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
         // colour avoids the dark flash that the old hardcoded #1a1a1a caused
         // on light themes during reload / new tab.
         if #available(macOS 12.0, *) {
-            webView.underPageBackgroundColor = prePaintColor
+            webView.underPageBackgroundColor = .clear
         }
         let darkModeScript = WKUserScript(
             source: """
@@ -704,6 +707,29 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
             forMainFrameOnly: true
         )
         config.userContentController.addUserScript(darkModeScript)
+
+        // Apply the Mac-only presentation layer without forking or mutating the
+        // hosted WebUI. Keeping the stylesheet as a bundle resource makes the
+        // appearance reviewable and leaves all application behaviour upstream.
+        if let glassURL = Bundle.main.url(forResource: "MacGlass", withExtension: "css"),
+           let glassCSS = try? String(contentsOf: glassURL, encoding: .utf8),
+           let encodedCSS = try? JSONEncoder().encode(glassCSS),
+           let quotedCSS = String(data: encodedCSS, encoding: .utf8) {
+            let macGlassScript = WKUserScript(
+                source: """
+                    (function() {
+                        document.documentElement.classList.add('hermes-native-glass');
+                        const style = document.createElement('style');
+                        style.id = 'hermes-native-glass-style';
+                        style.textContent = \(quotedCSS);
+                        (document.head || document.documentElement).appendChild(style);
+                    })();
+                    """,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            )
+            config.userContentController.addUserScript(macGlassScript)
+        }
 
         // Fix #57: inject default traffic light clearance at documentStart.
         // Refined to exact measured pixels in injectTrafficLightWidthVar() after didFinish.
@@ -804,7 +830,23 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
         )
         config.userContentController.addUserScript(appTitlebarToggleScript)
 
-        contentView.addSubview(webView)
+        if #available(macOS 26.0, *) {
+            let glassHost = NSGlassEffectView(frame: webFrame)
+            glassHost.style = .regular
+            glassHost.cornerRadius = 0
+            glassHost.tintColor = prePaintColor.withAlphaComponent(0.16)
+            webViewHost = glassHost
+        } else {
+            let materialHost = NSVisualEffectView(frame: webFrame)
+            materialHost.material = .underWindowBackground
+            materialHost.blendingMode = .behindWindow
+            materialHost.state = .active
+            webViewHost = materialHost
+        }
+        webViewHost.autoresizingMask = [.width, .height]
+        webView.frame = webViewHost.bounds
+        webViewHost.addSubview(webView)
+        contentView.addSubview(webViewHost)
 
         // Fix #64: install a thin transparent drag overlay over the title-bar zone.
         // Height 38px matches .app-titlebar in the web UI. The view is added AFTER
@@ -1797,9 +1839,10 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
             ? win.contentLayoutRect.maxY - findBarHeight
             : contentView.bounds.height - findBarHeight
         let newHeight = max(0, topY - statusBarHeight)
-        webView.frame = NSRect(
+        webViewHost.frame = NSRect(
             x: 0, y: statusBarHeight,
             width: contentView.bounds.width, height: newHeight)
+        webView.frame = webViewHost.bounds
         // Hide the web titlebar when the AppKit tab bar is rendering it
         // redundantly; restore when it's gone.
         updateAppTitlebarClass(tabbed: tabBarVisible)
@@ -1838,6 +1881,9 @@ class BrowserWindowController: NSWindowController, NSWindowDelegate, WKUIDelegat
     /// AppKit can paint its own tonal materials and tab dividers.
     func applyChromeBackgroundColor(_ color: NSColor) {
         statusBar?.layer?.backgroundColor = color.cgColor
+        if #available(macOS 26.0, *), let glassHost = webViewHost as? NSGlassEffectView {
+            glassHost.tintColor = color.withAlphaComponent(0.16)
+        }
         // Re-resolve the separator colour in the new appearance so its tone
         // matches the surroundings (1-px line, but still nice to keep crisp).
         if let sep = separator {

@@ -43,6 +43,7 @@ install_name_tool \
 echo "→ Copying icon resources..."
 cp "Resources/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 cp "Resources/WelcomeIcon.png" "$APP_BUNDLE/Contents/Resources/WelcomeIcon.png"
+cp "Resources/MacGlass.css" "$APP_BUNDLE/Contents/Resources/MacGlass.css"
 
 cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>

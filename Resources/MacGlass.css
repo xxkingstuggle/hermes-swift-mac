@@ -1,0 +1,187 @@
+/* Native macOS chrome for the Hermes wrapper. Keep this file visual-only:
+   the hosted WebUI remains the source of truth for layout and behaviour. */
+
+:root.hermes-native-glass {
+  --mac-glass-nav: rgba(38, 39, 41, .50);
+  --mac-glass-canvas: rgba(17, 18, 19, .92);
+  --mac-glass-surface: rgba(255, 255, 255, .055);
+  --mac-glass-hover: rgba(255, 255, 255, .075);
+  --mac-glass-selected: rgba(255, 255, 255, .105);
+  --mac-glass-border: rgba(255, 255, 255, .09);
+  --mac-glass-border-strong: rgba(255, 255, 255, .14);
+  --mac-glass-shadow: 0 1px 0 rgba(255, 255, 255, .045) inset,
+    0 8px 30px rgba(0, 0, 0, .12);
+  color-scheme: dark;
+}
+
+:root.hermes-native-glass:not(.dark) {
+  --mac-glass-nav: rgba(239, 239, 241, .58);
+  --mac-glass-canvas: rgba(249, 249, 250, .93);
+  --mac-glass-surface: rgba(255, 255, 255, .58);
+  --mac-glass-hover: rgba(255, 255, 255, .66);
+  --mac-glass-selected: rgba(255, 255, 255, .80);
+  --mac-glass-border: rgba(0, 0, 0, .085);
+  --mac-glass-border-strong: rgba(0, 0, 0, .13);
+  --mac-glass-shadow: 0 1px 0 rgba(255, 255, 255, .72) inset,
+    0 8px 30px rgba(0, 0, 0, .06);
+  color-scheme: light;
+}
+
+html.hermes-native-glass,
+html.hermes-native-glass body {
+  background: transparent !important;
+}
+
+.hermes-native-glass .app-titlebar,
+.hermes-native-glass .rail,
+.hermes-native-glass .sidebar {
+  background: var(--mac-glass-nav) !important;
+  -webkit-backdrop-filter: blur(34px) saturate(1.45);
+  backdrop-filter: blur(34px) saturate(1.45);
+}
+
+.hermes-native-glass .app-titlebar {
+  border-bottom: 1px solid var(--mac-glass-border) !important;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .025) inset;
+}
+
+.hermes-native-glass .rail {
+  border-right: 1px solid var(--mac-glass-border) !important;
+  box-shadow: none !important;
+}
+
+.hermes-native-glass .sidebar {
+  border-right: 1px solid var(--mac-glass-border) !important;
+  box-shadow: 1px 0 0 rgba(255, 255, 255, .018) inset !important;
+}
+
+.hermes-native-glass .rail-btn {
+  border: 1px solid transparent !important;
+  border-radius: 11px !important;
+  transition: background-color .16s ease, border-color .16s ease,
+    color .16s ease, transform .16s ease !important;
+}
+
+.hermes-native-glass .rail-btn:hover {
+  background: var(--mac-glass-hover) !important;
+  border-color: var(--mac-glass-border) !important;
+}
+
+.hermes-native-glass .rail-btn:active {
+  transform: scale(.94);
+}
+
+.hermes-native-glass .rail-btn.active {
+  background: var(--mac-glass-selected) !important;
+  border-color: var(--mac-glass-border-strong) !important;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .06) inset,
+    0 4px 12px rgba(0, 0, 0, .10) !important;
+}
+
+.hermes-native-glass .rail-btn.active::before,
+.hermes-native-glass .session-item.active::before {
+  display: none !important;
+}
+
+.hermes-native-glass .panel-head {
+  border-bottom-color: var(--mac-glass-border) !important;
+}
+
+.hermes-native-glass .session-search,
+.hermes-native-glass .sidebar-search input,
+.hermes-native-glass .sidebar-search select {
+  background: var(--mac-glass-surface) !important;
+  border-color: var(--mac-glass-border) !important;
+  border-radius: 11px !important;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .035) inset !important;
+}
+
+.hermes-native-glass .session-source-tab,
+.hermes-native-glass .session-filter-chip,
+.hermes-native-glass .session-item {
+  border: 1px solid transparent !important;
+  border-radius: 11px !important;
+}
+
+.hermes-native-glass .session-source-tab:hover,
+.hermes-native-glass .session-filter-chip:hover,
+.hermes-native-glass .session-item:hover {
+  background: var(--mac-glass-hover) !important;
+  border-color: var(--mac-glass-border) !important;
+}
+
+.hermes-native-glass .session-source-tab.active,
+.hermes-native-glass .session-filter-chip.active,
+.hermes-native-glass .session-item.active {
+  background: var(--mac-glass-selected) !important;
+  border: 1px solid var(--mac-glass-border-strong) !important;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .045) inset !important;
+  color: var(--text) !important;
+}
+
+.hermes-native-glass .session-item.active,
+.hermes-native-glass .session-item.active.streaming,
+.hermes-native-glass .session-item.active.unread,
+.hermes-native-glass .session-item.active.needs-attention {
+  padding-left: 12px !important;
+}
+
+.hermes-native-glass .session-item.active .session-title,
+.hermes-native-glass .session-item.active .session-meta,
+.hermes-native-glass .session-item.active .session-preview,
+.hermes-native-glass .session-item.active * {
+  color: inherit !important;
+}
+
+.hermes-native-glass .main,
+.hermes-native-glass .main-view,
+.hermes-native-glass .chat,
+.hermes-native-glass .messages {
+  background: var(--mac-glass-canvas) !important;
+}
+
+.hermes-native-glass .topbar {
+  background: color-mix(in srgb, var(--mac-glass-canvas) 78%, transparent) !important;
+  border-bottom-color: var(--mac-glass-border) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(1.25);
+  backdrop-filter: blur(24px) saturate(1.25);
+}
+
+.hermes-native-glass .composer-wrap {
+  background: transparent !important;
+  border-top: 0 !important;
+}
+
+.hermes-native-glass .composer-wrap::before {
+  background: linear-gradient(to bottom, transparent, var(--mac-glass-canvas)) !important;
+}
+
+.hermes-native-glass .composer-box {
+  background: var(--mac-glass-surface) !important;
+  border: 1px solid var(--mac-glass-border-strong) !important;
+  border-radius: 18px !important;
+  box-shadow: var(--mac-glass-shadow) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(1.25);
+  backdrop-filter: blur(24px) saturate(1.25);
+}
+
+.hermes-native-glass button,
+.hermes-native-glass [role="button"] {
+  -webkit-tap-highlight-color: transparent;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .hermes-native-glass .app-titlebar,
+  .hermes-native-glass .rail,
+  .hermes-native-glass .sidebar {
+    background: var(--sidebar) !important;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+
+  .hermes-native-glass .composer-box {
+    background: var(--surface) !important;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
